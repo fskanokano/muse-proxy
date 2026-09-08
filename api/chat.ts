@@ -243,10 +243,13 @@ export async function handleChatRequest(
   })
 }
 
-// Vercel Edge handler shell.
-export default async function handler(request: Request): Promise<Response> {
+// Vercel handler shell (Node.js runtime, Web-standard fetch export).
+async function handler(request: Request): Promise<Response> {
   return handleChatRequest(request, { PROXY_API_KEY: process.env.PROXY_API_KEY })
 }
+
+export default { fetch: handler }
+export { handler as POST, handler as GET }
 
 // Re-exported for tests.
 export { MODEL_NAME }

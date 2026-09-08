@@ -42,6 +42,9 @@ export function handleModelsRequest(request: Request, env: ModelsEnv): Response 
   })
 }
 
-export default async function handler(request: Request): Promise<Response> {
+async function handler(request: Request): Promise<Response> {
   return handleModelsRequest(request, { PROXY_API_KEY: process.env.PROXY_API_KEY })
 }
+
+export default { fetch: handler }
+export { handler as POST, handler as GET }
