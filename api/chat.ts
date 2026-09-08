@@ -11,7 +11,7 @@ import { createRaiser } from "./_lib/raise.js"
 import { chunkToSse, DONE_LINE, HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse.js"
 import type { ChatToolCall, ChatUsage, UpstreamEvent } from "./_lib/types.js"
 import { usageToChat } from "./_lib/usage.js"
-import { MODEL_ID, MODEL_NAME, UPSTREAM_API_KEY, UPSTREAM_URL } from "./_lib/types.js"
+import { MODEL_ID, MODEL_NAME, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT } from "./_lib/types.js"
 
 export interface ChatEnv {
   PROXY_API_KEY?: string
@@ -141,6 +141,8 @@ export async function handleChatRequest(
         authorization: `Bearer ${UPSTREAM_API_KEY}`,
         "content-type": "application/json",
         accept: "text/event-stream",
+        // Free tier is UA-gated; without this upstream rejects the request.
+        "user-agent": UPSTREAM_USER_AGENT,
       },
       body: JSON.stringify(lowered.request),
       // Propagate client disconnects so we stop billing upstream tokens.
