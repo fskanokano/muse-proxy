@@ -1,9 +1,9 @@
 // GET /v1/models (rewritten to /api/models) — static catalog of the free
 // muse model, OpenAI models-list format.
 
-import { checkAuth } from "./_lib/auth"
-import { jsonError } from "./_lib/errors"
-import { MODEL_ID, MODEL_NAME } from "./_lib/types"
+import { checkAuth } from "./_lib/auth.js"
+import { jsonError } from "./_lib/errors.js"
+import { MODEL_ID, MODEL_NAME } from "./_lib/types.js"
 
 export interface ModelsEnv {
   PROXY_API_KEY?: string

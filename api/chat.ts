@@ -4,14 +4,14 @@
 // (Responses SSE -> chat chunks) -> SSE out (or aggregated JSON for
 // stream:false).
 
-import { checkAuth } from "./_lib/auth"
-import { errorChunk, jsonError, upstreamErrorToOpenAI } from "./_lib/errors"
-import { lowerRequest } from "./_lib/lower"
-import { createRaiser } from "./_lib/raise"
-import { chunkToSse, DONE_LINE, HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse"
-import type { ChatToolCall, ChatUsage, UpstreamEvent } from "./_lib/types"
-import { usageToChat } from "./_lib/usage"
-import { MODEL_ID, MODEL_NAME, UPSTREAM_API_KEY, UPSTREAM_URL } from "./_lib/types"
+import { checkAuth } from "./_lib/auth.js"
+import { errorChunk, jsonError, upstreamErrorToOpenAI } from "./_lib/errors.js"
+import { lowerRequest } from "./_lib/lower.js"
+import { createRaiser } from "./_lib/raise.js"
+import { chunkToSse, DONE_LINE, HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse.js"
+import type { ChatToolCall, ChatUsage, UpstreamEvent } from "./_lib/types.js"
+import { usageToChat } from "./_lib/usage.js"
+import { MODEL_ID, MODEL_NAME, UPSTREAM_API_KEY, UPSTREAM_URL } from "./_lib/types.js"
 
 export interface ChatEnv {
   PROXY_API_KEY?: string

@@ -1,7 +1,7 @@
 // SSE helpers: render chat chunks as `data: {...}` lines with keepalive
 // comments, plus an upstream SSE line parser for the Responses event stream.
 
-import type { ChatChunk } from "./types"
+import type { ChatChunk } from "./types.js"
 
 export const HEARTBEAT_COMMENT = ": ping\n\n"
 export const HEARTBEAT_INTERVAL_MS = 15_000

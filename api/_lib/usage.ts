@@ -1,7 +1,7 @@
 // Shared usage mapping between the raising path (streaming chunks) and the
 // aggregation path (non-streaming completions).
 
-import type { ChatUsage, UpstreamUsage } from "./types"
+import type { ChatUsage, UpstreamUsage } from "./types.js"
 
 export function usageToChat(usage: UpstreamUsage | null | undefined): ChatUsage | undefined {
   if (!usage) return undefined

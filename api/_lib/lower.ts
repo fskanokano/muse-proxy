@@ -3,7 +3,7 @@
 // models: store:false, include encrypted reasoning, reasoning summary auto,
 // effort whitelisting, and replay-item sanitization.
 
-import { decodeReasoningDetails, sanitizeReplayItems, type ReasoningItem } from "./reasoning"
+import { decodeReasoningDetails, sanitizeReplayItems, type ReasoningItem } from "./reasoning.js"
 import {
   DEFAULT_REASONING_EFFORT,
   MAX_OUTPUT_TOKENS,
@@ -14,7 +14,7 @@ import {
   type UpstreamRequest,
   type UpstreamTool,
   type UpstreamToolChoice,
-} from "./types"
+} from "./types.js"
 
 export type LowerResult =
   | { request: UpstreamRequest }

@@ -2,9 +2,9 @@
 // chunks. Pure transform: the caller (chat.ts) owns the SSE wire format,
 // heartbeats, and non-stream aggregation.
 
-import { encodeReasoningDetails, type ReasoningItem } from "./reasoning"
-import type { ChatChunk, ChatUsage, UpstreamEvent } from "./types"
-import { usageToChat } from "./usage"
+import { encodeReasoningDetails, type ReasoningItem } from "./reasoning.js"
+import type { ChatChunk, ChatUsage, UpstreamEvent } from "./types.js"
+import { usageToChat } from "./usage.js"
 
 export interface RaiserOptions {
   id: string
