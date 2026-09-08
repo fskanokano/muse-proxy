@@ -143,6 +143,10 @@ export async function handleChatRequest(
         accept: "text/event-stream",
         // Free tier is UA-gated; without this upstream rejects the request.
         "user-agent": UPSTREAM_USER_AGENT,
+        // Required by the responses endpoint (MissingSessionID otherwise).
+        // Stateless proxy: one id per upstream request; mirrors
+        // opencode's `x-opencode-session: sessionID` (request.ts).
+        "x-opencode-session": crypto.randomUUID(),
       },
       body: JSON.stringify(lowered.request),
       // Propagate client disconnects so we stop billing upstream tokens.
