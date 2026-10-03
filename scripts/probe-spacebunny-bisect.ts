@@ -13,9 +13,9 @@
 // proxy wire shape we call lowerChatUpstream directly with a ModelInfo-shaped
 // object and the same kinds of input items the muse path produces.
 
-import { lowerChatUpstream } from "../supabase/functions/v1/_lib/chat-upstream.ts"
-import { identityForCall } from "../supabase/functions/v1/_lib/identity.ts"
-import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT, type UpstreamTool } from "../supabase/functions/v1/_lib/types.ts"
+import { lowerChatUpstream } from "../supabase/functions/muse-proxy/_lib/chat-upstream.ts"
+import { identityForCall } from "../supabase/functions/muse-proxy/_lib/identity.ts"
+import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT, type UpstreamTool } from "../supabase/functions/muse-proxy/_lib/types.ts"
 
 const OA_COMPAT_URL = "https://opencode.ai/zen/v1/chat/completions"
 const MODEL = process.env.PROBE_MODEL ?? "space-bunny-free"

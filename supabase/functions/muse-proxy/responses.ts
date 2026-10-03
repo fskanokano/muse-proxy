@@ -1,4 +1,4 @@
-// POST /v1/responses (Supabase Edge Function `v1`) — OpenAI Responses API
+// POST /v1/responses (Supabase Edge Function `muse-proxy`) — OpenAI Responses API
 // facade, independent from the chat completions facade in api/chat.ts.
 //
 // Pipeline: auth -> normalizeResponsesRequest (Responses body -> upstream

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { lowerRequest } from "../supabase/functions/v1/_lib/lower.ts"
-import { encodeReasoningDetails, type ReasoningItem } from "../supabase/functions/v1/_lib/reasoning.ts"
+import { lowerRequest } from "../supabase/functions/muse-proxy/_lib/lower.ts"
+import { encodeReasoningDetails, type ReasoningItem } from "../supabase/functions/muse-proxy/_lib/reasoning.ts"
 
 const ok = (result: ReturnType<typeof lowerRequest>) => {
   if ("error" in result) throw new Error(`expected success, got ${JSON.stringify(result.error)}`)

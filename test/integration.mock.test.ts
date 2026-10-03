@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { handleChatRequest, type ChatDependencies } from "../api/chat"
-import { encodeReasoningDetails } from "../supabase/functions/v1/_lib/reasoning.ts"
+import { encodeReasoningDetails } from "../supabase/functions/muse-proxy/_lib/reasoning.ts"
 
 const ENV = { PROXY_API_KEY: "test-key" }
 const AUTH = { authorization: "Bearer test-key" }

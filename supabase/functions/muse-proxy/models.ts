@@ -1,4 +1,4 @@
-// GET /v1/models (Supabase Edge Function `v1`) — catalog of the free models
+// GET /v1/models (Supabase Edge Function `muse-proxy`) — catalog of the free models
 // the proxy serves, OpenAI models-list format. muse-spark keeps its historical
 // "any model id maps here" note; the two new free models route to the
 // oa-compat upstream (see _lib/types.ts MODELS).

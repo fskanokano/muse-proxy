@@ -19,9 +19,9 @@ inspector_port = 8083
 # Deno 2 — the runtime every `supabase functions serve` / `deploy` uses.
 deno_version = 2
 
-[functions.v1]
+[functions.muse-proxy]
 # The proxy authenticates with its own PROXY_API_KEY
-# (`Authorization: Bearer …` or `x-api-key`, see supabase/functions/v1/_lib/auth.ts),
+# (`Authorization: Bearer …` or `x-api-key`, see supabase/functions/muse-proxy/_lib/auth.ts),
 # NOT with a Supabase user JWT, so the gateway JWT check is disabled. The
 # gateway still requires the Supabase `apikey` header on every request.
 verify_jwt = false

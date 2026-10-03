@@ -1,4 +1,4 @@
-// POST /v1/chat/completions (Supabase Edge Function `v1`) — the main facade.
+// POST /v1/chat/completions (Supabase Edge Function `muse-proxy`) — the main facade.
 //
 // Pipeline: auth -> lower (chat -> Responses) -> fetch opencode zen -> raise
 // (Responses SSE -> chat chunks) -> SSE out (or aggregated JSON for

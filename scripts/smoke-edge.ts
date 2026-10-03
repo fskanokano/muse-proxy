@@ -7,7 +7,7 @@
 //
 // Unlike the in-process smokes (which import the handlers directly), this
 // drives the DEPLOYED artifact the way a real client does: real HTTP over
-// /functions/v1/v1/*, real SSE frames, real client aborts, real opencode zen
+// /functions/v1/muse-proxy/v1/*, real SSE frames, real client aborts, real opencode zen
 // upstream. That is the only way to catch runtime-level breakage (gateway path
 // routing, Deno-vs-Node stream semantics, header fingerprint) that unit tests
 // cannot see.
@@ -21,7 +21,7 @@
 //   6. client abort             - mid-stream cancel closes cleanly, no hang
 // plus platform-level checks (routing, fail-closed auth, method/JSON guards).
 
-const BASE = (process.env.EDGE_BASE_URL ?? "http://127.0.0.1:8788/functions/v1/v1").replace(/\/+$/, "")
+const BASE = (process.env.EDGE_BASE_URL ?? "http://127.0.0.1:8788/functions/v1/muse-proxy/v1").replace(/\/+$/, "")
 const KEY = process.env.PROXY_API_KEY ?? ""
 const MODELS = ["muse-spark-1.3-contributor-free", "mimo-v2.6-flash-free", "space-bunny-free"]
 const BUILTIN_TOOL_NAMES = new Set([
@@ -678,14 +678,14 @@ async function checkPlatform(): Promise<void> {
   // them before the function runs. Probing from the ORIGIN, not from BASE,
   // avoids prefixing the mount point twice.
   const origin = new URL(BASE).origin
-  const gatewayForm = await fetch(`${origin}/functions/v1/v1/chat/completions`, {
+  const gatewayForm = await fetch(`${origin}/functions/v1/muse-proxy/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "{}",
   })
   // An unauthenticated {} body must fail on AUTH (401), never 404/405 — that
   // would mean the path never matched a facade.
-  check(gatewayForm.status === 401, "gateway route /functions/v1/v1/* reaches the handler", `status=${gatewayForm.status}`)
+  check(gatewayForm.status === 401, "gateway route /functions/v1/muse-proxy/v1/* reaches the handler", `status=${gatewayForm.status}`)
 
   for (const suffix of ["/v1/chat/completions", "/chat/completions"]) {
     const res = await fetch(`${origin}${suffix}`, {
@@ -710,7 +710,7 @@ async function checkPlatform(): Promise<void> {
 
   // verify_jwt = false: no Supabase apikey header is needed, PROXY_API_KEY is
   // the only credential. This is what keeps the base URL drop-in compatible.
-  const noApiKey = await fetch(`${origin}/functions/v1/v1/models`, {
+  const noApiKey = await fetch(`${origin}/functions/v1/muse-proxy/v1/models`, {
     headers: { authorization: `Bearer ${KEY}` },
   })
   check(noApiKey.status === 200, "no Supabase apikey required (verify_jwt=false)", `status=${noApiKey.status}`)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { handleRequest, matchRoute, normalizePath } from "../supabase/functions/v1/router.ts"
+import { handleRequest, matchRoute, normalizePath } from "../supabase/functions/muse-proxy/router.ts"
 
 const ENV = { PROXY_API_KEY: "test-key" }
 const AUTH = { authorization: "Bearer test-key" }
@@ -35,7 +35,7 @@ describe("edge function path normalization", () => {
   it("matches every mount form Supabase can hand the function", () => {
     // The hosted gateway sends the full path; a bare function serve sends only
     // the sub-path. Both must resolve to the same facade.
-    for (const prefix of ["", "/v1", "/functions/v1", "/functions/v1/v1"]) {
+    for (const prefix of ["", "/v1", "/muse-proxy", "/functions/v1", "/functions/v1/muse-proxy"]) {
       expect(matchRoute(`${prefix}/chat/completions`)).toBe("chat")
       expect(matchRoute(`${prefix}/responses`)).toBe("responses")
       expect(matchRoute(`${prefix}/messages`)).toBe("messages")
@@ -44,25 +44,33 @@ describe("edge function path normalization", () => {
   })
 
   it("tolerates a trailing slash", () => {
-    expect(matchRoute("/functions/v1/v1/responses/")).toBe("responses")
-    expect(normalizePath("/functions/v1/v1/")).toBe("/")
+    expect(matchRoute("/functions/v1/muse-proxy/responses/")).toBe("responses")
+    expect(normalizePath("/functions/v1/muse-proxy/")).toBe("/")
   })
 
-  it("does not double-prefix: /v1/v1 is stripped only once", () => {
-    expect(normalizePath("/functions/v1/v1/chat/completions")).toBe("/chat/completions")
+  it("does not double-prefix: mount prefix is stripped only once", () => {
+    expect(normalizePath("/functions/v1/muse-proxy/chat/completions")).toBe("/chat/completions")
     expect(normalizePath("/v1/chat/completions")).toBe("/chat/completions")
   })
 
+
+  it("strips gateway mount plus in-function /v1 prefix", () => {
+    expect(matchRoute("/functions/v1/muse-proxy/v1/models")).toBe("models")
+    expect(matchRoute("/functions/v1/muse-proxy/v1/chat/completions")).toBe("chat")
+    expect(matchRoute("/functions/v1/muse-proxy/v1/responses")).toBe("responses")
+    expect(matchRoute("/functions/v1/muse-proxy/v1/messages")).toBe("messages")
+  })
+
   it("returns null for unknown paths", () => {
-    expect(matchRoute("/functions/v1/v1/embeddings")).toBeNull()
-    expect(matchRoute("/functions/v1/v1/chat")).toBeNull()
+    expect(matchRoute("/functions/v1/muse-proxy/embeddings")).toBeNull()
+    expect(matchRoute("/functions/v1/muse-proxy/chat")).toBeNull()
     expect(matchRoute("/")).toBeNull()
   })
 
   it("prefers the longest mount prefix", () => {
-    // /functions/v1/v1/models belongs to this function, not a hypothetical
+    // /functions/v1/muse-proxy/models belongs to this function, not a hypothetical
     // sibling function mounted at /functions/v1.
-    expect(normalizePath("/functions/v1/v1/models")).toBe("/models")
+    expect(normalizePath("/functions/v1/muse-proxy/models")).toBe("/models")
     expect(normalizePath("/functions/v1/models")).toBe("/models")
   })
 })
@@ -74,7 +82,7 @@ describe("edge function dispatch", () => {
       { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } },
     ])
     const res = await handleRequest(
-      request("/functions/v1/v1/chat/completions", { body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }) }),
+      request("/functions/v1/muse-proxy/chat/completions", { body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }) }),
       ENV,
       { fetchImpl },
     )
@@ -95,7 +103,7 @@ describe("edge function dispatch", () => {
       { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } },
     ])
     const res = await handleRequest(
-      request("/functions/v1/v1/responses", { body: JSON.stringify({ input: "hi" }) }),
+      request("/functions/v1/muse-proxy/responses", { body: JSON.stringify({ input: "hi" }) }),
       ENV,
       { fetchImpl },
     )
@@ -110,7 +118,7 @@ describe("edge function dispatch", () => {
       { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } },
     ])
     const res = await handleRequest(
-      request("/functions/v1/v1/messages", {
+      request("/functions/v1/muse-proxy/messages", {
         headers: { "content-type": "application/json", "x-api-key": "test-key" },
         body: JSON.stringify({ max_tokens: 64, messages: [{ role: "user", content: "hi" }] }),
       }),
@@ -125,7 +133,7 @@ describe("edge function dispatch", () => {
   it("serves /v1/models without touching the upstream", async () => {
     const { calls, fetchImpl } = fetchStubFactory([])
     const res = await handleRequest(
-      new Request("https://project-ref.supabase.co/functions/v1/v1/models", { headers: AUTH }),
+      new Request("https://project-ref.supabase.co/functions/v1/muse-proxy/models", { headers: AUTH }),
       ENV,
       { fetchImpl },
     )
@@ -142,7 +150,7 @@ describe("edge function dispatch", () => {
 
   it("404s an unknown route without calling the upstream", async () => {
     const { calls, fetchImpl } = fetchStubFactory([])
-    const res = await handleRequest(request("/functions/v1/v1/embeddings"), ENV, { fetchImpl })
+    const res = await handleRequest(request("/functions/v1/muse-proxy/embeddings"), ENV, { fetchImpl })
     expect(res.status).toBe(404)
     const body = (await res.json()) as { error: { code: string; type: string } }
     expect(body.error.code).toBe("not_found")
@@ -151,17 +159,17 @@ describe("edge function dispatch", () => {
   })
 
   it("serves an index at the function root", async () => {
-    const res = await handleRequest(new Request("https://project-ref.supabase.co/functions/v1/v1", { headers: AUTH }), ENV)
+    const res = await handleRequest(new Request("https://project-ref.supabase.co/functions/v1/muse-proxy", { headers: AUTH }), ENV)
     expect(res.status).toBe(200)
     const body = (await res.json()) as { function: string; endpoints: string[] }
-    expect(body.function).toBe("v1")
+    expect(body.function).toBe("muse-proxy")
     expect(body.endpoints).toContain("GET /v1/models")
   })
 
   it("fails closed when PROXY_API_KEY is not configured", async () => {
     const { calls, fetchImpl } = fetchStubFactory([])
     for (const path of ["/chat/completions", "/responses", "/messages", "/models"]) {
-      const res = await handleRequest(request(`/functions/v1/v1${path}`), {}, { fetchImpl })
+      const res = await handleRequest(request(`/functions/v1/muse-proxy${path}`), {}, { fetchImpl })
       expect(res.status).toBe(401)
     }
     expect(calls).toHaveLength(0)
@@ -172,7 +180,7 @@ describe("edge function dispatch", () => {
     // assert the seam is threaded through instead.
     const { calls, fetchImpl } = fetchStubFactory([{ type: "response.completed", response: {} }])
     await handleRequest(
-      request("/functions/v1/v1/chat/completions", { body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }) }),
+      request("/functions/v1/muse-proxy/chat/completions", { body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }) }),
       ENV,
       { fetchImpl },
     )
@@ -188,13 +196,13 @@ describe("edge function dispatch", () => {
   it("rejects GET on POST-only facades but allows it on /v1/models", async () => {
     for (const path of ["/chat/completions", "/responses", "/messages"]) {
       const res = await handleRequest(
-        new Request(`https://project-ref.supabase.co/functions/v1/v1${path}`, { headers: AUTH }),
+        new Request(`https://project-ref.supabase.co/functions/v1/muse-proxy${path}`, { headers: AUTH }),
         ENV,
       )
       expect(res.status).toBe(405)
     }
     const models = await handleRequest(
-      new Request("https://project-ref.supabase.co/functions/v1/v1/models", { headers: AUTH }),
+      new Request("https://project-ref.supabase.co/functions/v1/muse-proxy/models", { headers: AUTH }),
       ENV,
     )
     expect(models.status).toBe(200)

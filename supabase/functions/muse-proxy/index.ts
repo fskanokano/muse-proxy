@@ -1,11 +1,11 @@
 // Edge Function entrypoint for muse-proxy.
 //
-// Mounted at `/functions/v1/v1`, so the deployed base URL keeps the OpenAI /
+// Mounted at `/functions/v1/muse-proxy` (in-function API prefix `/v1`), so the deployed base URL keeps the OpenAI /
 // Anthropic paths intact (see router.ts). Deploy with:
 //
 //   supabase link --project-ref <project-ref>
 //   supabase secrets set PROXY_API_KEY=<key>
-//   supabase functions deploy v1 --no-verify-jwt
+//   supabase functions deploy muse-proxy --no-verify-jwt
 //
 // Authentication: the proxy's own fail-closed PROXY_API_KEY check lives in
 // _lib/auth.ts (`Authorization: Bearer <key>` or `x-api-key: <key>`), so the

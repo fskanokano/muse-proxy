@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { identityForCall, partId, projectIdFrom } from "../supabase/functions/v1/_lib/identity.ts"
+import { identityForCall, partId, projectIdFrom } from "../supabase/functions/muse-proxy/_lib/identity.ts"
 
 describe("identityForCall", () => {
   it("produces opencode-shaped session and message ids", () => {

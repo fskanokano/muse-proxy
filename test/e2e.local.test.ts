@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { handleChatRequest } from "../api/chat"
 import { handleResponsesRequest } from "../api/responses"
 import { handleMessagesRequest } from "../api/messages"
-import { OPENCODE_BUILTIN_TOOLS } from "../supabase/functions/v1/_lib/tools.ts"
+import { OPENCODE_BUILTIN_TOOLS } from "../supabase/functions/muse-proxy/_lib/tools.ts"
 
 const ENV = { PROXY_API_KEY: "e2e-key" }
 

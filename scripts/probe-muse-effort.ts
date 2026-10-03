@@ -1,7 +1,7 @@
 // Probe: does the muse Responses upstream accept reasoning.effort "max"?
-import { lowerRequest } from "../supabase/functions/v1/_lib/lower.ts"
-import { identityForCall } from "../supabase/functions/v1/_lib/identity.ts"
-import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT } from "../supabase/functions/v1/_lib/types.ts"
+import { lowerRequest } from "../supabase/functions/muse-proxy/_lib/lower.ts"
+import { identityForCall } from "../supabase/functions/muse-proxy/_lib/identity.ts"
+import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT } from "../supabase/functions/muse-proxy/_lib/types.ts"
 
 for (const effort of ["xhigh", "max"]) {
   const identity = identityForCall(`probe-muse-effort-${effort}`)

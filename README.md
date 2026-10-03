@@ -2,21 +2,21 @@
 
 一个把 opencode zen 的免费模型包装成标准 OpenAI Chat Completions / Responses 与 Anthropic Messages API 的无状态代理,零运行时依赖。**当前部署目标是单个 Supabase Edge Function(Deno 运行时)**;原 Vercel 部署保留为兼容外壳(同一套实现,只换宿主外壳)。
 
-- **入站**:`POST /functions/v1/v1/chat/completions`(OpenAI `/v1/chat/completions` 兼容,支持流式 SSE 与聚合 JSON、工具调用、`reasoning_effort`)
-- **入站**:`POST /functions/v1/v1/responses`(OpenAI `/v1/responses` Responses API 规范,支持流式 SSE 与聚合 JSON、工具调用、加密思考回放,详见下文)
-- **入站**:`POST /functions/v1/v1/messages`(Anthropic `/v1/messages` Messages API 规范,支持流式 SSE 与聚合 JSON、工具调用、thinking 块,详见下文)
+- **入站**:`POST /functions/v1/muse-proxy/chat/completions`(OpenAI `/v1/chat/completions` 兼容,支持流式 SSE 与聚合 JSON、工具调用、`reasoning_effort`)
+- **入站**:`POST /functions/v1/muse-proxy/responses`(OpenAI `/v1/responses` Responses API 规范,支持流式 SSE 与聚合 JSON、工具调用、加密思考回放,详见下文)
+- **入站**:`POST /functions/v1/muse-proxy/messages`(Anthropic `/v1/messages` Messages API 规范,支持流式 SSE 与聚合 JSON、工具调用、thinking 块,详见下文)
 - **出站**:按模型分格式路由(zen 边缘按格式路由,2026-09-24 探针确认):
   - `muse-spark-1.3-contributor-free` → `POST https://opencode.ai/zen/v1/responses`(OpenAI Responses API + SSE)
   - `mimo-v2.6-flash-free` → `POST https://opencode.ai/zen/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游直接 500)
   - `space-bunny-free` → `POST https://opencode.ai/zen/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游 401 `ModelError: not supported for format openai`)
 - **鉴权**:`Authorization: Bearer $PROXY_API_KEY` 或 `x-api-key: $PROXY_API_KEY`(三个端点共用同一鉴权逻辑)。**未设置 `PROXY_API_KEY` 环境变量时,所有端点一律返回 401(fail-closed),不存在开放模式**
 - **免费模型**:上游 API key 固定为字面量 `public`,匿名免费层按 IP 限额,无需注册
-- **模型路由**(`supabase/functions/v1/_lib/types.ts` 的 `resolveModel`):显式匹配 `mimo*`/`space-bunny*`/`muse*` 前缀,其余任意 model id 沿用历史行为回落 muse;三个端点对同一 model id 语义一致
+- **模型路由**(`supabase/functions/muse-proxy/_lib/types.ts` 的 `resolveModel`):显式匹配 `mimo*`/`space-bunny*`/`muse*` 前缀,其余任意 model id 沿用历史行为回落 muse;三个端点对同一 model id 语义一致
 - **思考强度**:逐档位实测上游接受度(2026-09-24,`scripts/probe-reasoning-efforts.ts`),`/v1/models` 每个模型暴露 `reasoning` + `reasoning_levels`:
   - `muse-spark-1.3-contributor-free`:`none/minimal/low/medium/high/xhigh`(`max` 上游 400);Anthropic 门面的 `thinking.budget_tokens` 档位映射不变
   - `mimo-v2.6-flash-free`:reasoning **恒开**,`reasoning_effort` 上游容忍但无效,故不暴露档位、不下发该字段
   - `space-bunny-free`:`minimal/low/medium/high/xhigh/max`(目录外还多接受 `minimal`);请求 `none` 会被钳制为 `minimal`(直接转发上游 400);Anthropic 门面 `thinking:{type:"disabled"}` 同样钳制为 `minimal`
-  - 钳制逻辑集中在 `clampEffortForModel`(`supabase/functions/v1/_lib/types.ts`),三个门面共用
+  - 钳制逻辑集中在 `clampEffortForModel`(`supabase/functions/muse-proxy/_lib/types.ts`),三个门面共用
 
 ```
 client ──chat/completions──▶ muse-proxy ─┬─lower──▶ opencode zen /v1/responses      (muse)
@@ -24,17 +24,17 @@ client ──chat/completions──▶ muse-proxy ─┬─lower──▶ openco
                                                           └─raise─▶ 同一套 raise 层
 ```
 
-新增的两个 oa-compat 模型(`supabase/functions/v1/_lib/chat-upstream.ts` + `supabase/functions/v1/_lib/oa-compat.ts`):降级(Responses input → chat messages,含 function_call 轮次回放：连续并行调用合并成一条 `assistant(content=null, tool_calls=[...])`，拆散上游直接 400)与升格(chat-completions SSE → 规范 Responses 事件生命周期:`response.created` → `output_item.added` → 文本/思考 delta → `output_text.done`/`output_item.done` → `response.completed`),三个门面共享同一转换层,语义(muse 门的工具暴露、心跳、终止事件守护)与 muse 路径完全一致。对 OpenMinis 2026-09-02 源码 (`4ef2900`) 的 Responses 解析器还补齐了 function-call 的 `output_item.added` → `function_call_arguments.delta` → `function_call_arguments.done` → `output_item.done` 顺序,避免工具参数被严格客户端静默丢弃。`/v1/models` 目录已包含全部三个模型。
+新增的两个 oa-compat 模型(`supabase/functions/muse-proxy/_lib/chat-upstream.ts` + `supabase/functions/muse-proxy/_lib/oa-compat.ts`):降级(Responses input → chat messages,含 function_call 轮次回放：连续并行调用合并成一条 `assistant(content=null, tool_calls=[...])`，拆散上游直接 400)与升格(chat-completions SSE → 规范 Responses 事件生命周期:`response.created` → `output_item.added` → 文本/思考 delta → `output_text.done`/`output_item.done` → `response.completed`),三个门面共享同一转换层,语义(muse 门的工具暴露、心跳、终止事件守护)与 muse 路径完全一致。对 OpenMinis 2026-09-02 源码 (`4ef2900`) 的 Responses 解析器还补齐了 function-call 的 `output_item.added` → `function_call_arguments.delta` → `function_call_arguments.done` → `output_item.done` 顺序,避免工具参数被严格客户端静默丢弃。`/v1/models` 目录已包含全部三个模型。
 
 ## 部署:Supabase Edge Functions
 
-整个代理是**一个** Edge Function(`v1`),四个路由在函数内部分发(`supabase/functions/v1/router.ts`)。单个函数只冷启动一次,四个门面共享一个热实例;拆成四个函数则每个门面各付一次冷启动。
+整个代理是**一个** Edge Function(`muse-proxy`),四个路由在函数内部分发(`supabase/functions/muse-proxy/router.ts`)。单个函数只冷启动一次,四个门面共享一个热实例;拆成四个函数则每个门面各付一次冷启动。
 
 ### 目录结构
 
 ```
 supabase/
-  config.toml                 # [functions.v1] verify_jwt = false(代理用自带鉴权)
+  config.toml                 # [functions.muse-proxy] verify_jwt = false(代理用自带鉴权)
   functions/v1/
     index.ts                  # Deno.serve 入口,部署产物的唯一 entrypoint
     router.ts                 # 路径分发 → 三个门面 + 模型目录(无 Deno 全局,可单测)
@@ -53,7 +53,7 @@ scripts/smoke-edge.ts         # 真实 HTTP + 真实上游的一致性套件
 supabase login
 supabase link --project-ref <project-ref>
 supabase secrets set PROXY_API_KEY=<你的密钥>
-supabase functions deploy v1          # = bun run deploy:functions
+supabase functions deploy muse-proxy          # = bun run deploy:functions
 ```
 
 两个迁移要点:
@@ -63,15 +63,15 @@ supabase functions deploy v1          # = bun run deploy:functions
 
 ### 调用
 
-部署后 base URL 是 `https://<project-ref>.supabase.co/functions/v1/v1`,客户端不用改 URL 结构:
+部署后 base URL 是 `https://<project-ref>.supabase.co/functions/v1/muse-proxy`,客户端不用改 URL 结构:
 
 | 客户端 | base URL |
 |---|---|
-| OpenAI SDK(`openai`) | `https://<project-ref>.supabase.co/functions/v1/v1` |
+| OpenAI SDK(`openai`) | `https://<project-ref>.supabase.co/functions/v1/muse-proxy` |
 | Anthropic SDK | `https://<project-ref>.supabase.co/functions/v1` |
 
 ```bash
-curl -X POST "https://<project-ref>.supabase.co/functions/v1/v1/chat/completions" \
+curl -X POST "https://<project-ref>.supabase.co/functions/v1/muse-proxy/chat/completions" \
   -H "Authorization: Bearer $PROXY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"space-bunny-free","messages":[{"role":"user","content":"hi"}]}'
@@ -96,7 +96,7 @@ bun run serve:fake      # 先 deno bundle 出部署产物,再用仿真网关包�
 bun run serve:functions # 官方方式,需要 Docker
 ```
 
-`serve:fake` 就是本地假 Supabase:`bundle:function` 按 CLI 的方式打出单文件产物到 `supabase/.temp/v1-bundle.js`,然后
+`serve:fake` 就是本地假 Supabase:`bundle:function` 按 CLI 的方式打出单文件产物到 `supabase/.temp/muse-proxy-bundle.js`,然后
 
 1. import 这个产物,让它自己的 `Deno.serve()` 跑起来(与 edge runtime 加载 bundle 的方式一致);
 2. 前面起一个仿真网关,复刻平台行为——`/functions/v1/<slug>[/...]` 路由并**完整转发原始路径**、未部署 slug 返回平台原版 `{"message":"Requested function was not found"}`、`verify_jwt` 从真实的 `supabase/config.toml` 读取(所以配置写错这里就会挂)。
@@ -106,14 +106,14 @@ bun run serve:functions # 官方方式,需要 Docker
 ### 验证
 
 ```bash
-bun run typecheck       # tsc:api/ test/ scripts/ + supabase/functions/v1
+bun run typecheck       # tsc:api/ test/ scripts/ + supabase/functions/muse-proxy
 bun run typecheck:edge  # deno check:index.ts / router.ts / serve-edge.ts
 bun run test            # 180 个单元/集成测试(mock 上游,无需联网)
 bun run smoke:edge      # 真实上游+真实 HTTP:平台层 34 检查 + 3 模型 × 3 门面 × 6 项(需先 serve:edge 或 serve:fake)
 bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印原文(同上需先启动服务)
 ```
 
-`smoke:edge` 是迁到 edge runtime 后新增的套件:它不像其它 smoke 那样直接 import handler,而是按真实部署形态打 `/functions/v1/v1/*`(真 HTTP、真 SSE 帧、真客户端取消、真上游),因为网关路由、Deno 流语义、指纹头这些只有走真实链路才测得到。配合 `serve:fake` 时,它测的还是**打包后的部署产物**,不是源码树——这才能覆盖"只在打包阶段才暴露"的故障(动态 import、函数目录外的文件、不可打包的依赖)。
+`smoke:edge` 是迁到 edge runtime 后新增的套件:它不像其它 smoke 那样直接 import handler,而是按真实部署形态打 `/functions/v1/muse-proxy/*`(真 HTTP、真 SSE 帧、真客户端取消、真上游),因为网关路由、Deno 流语义、指纹头这些只有走真实链路才测得到。配合 `serve:fake` 时,它测的还是**打包后的部署产物**,不是源码树——这才能覆盖"只在打包阶段才暴露"的故障(动态 import、函数目录外的文件、不可打包的依赖)。
 
 `smoke:converse` 补的是另一层:上面那些断言的是**契约**(字段形状、终止帧、工具回合),它断言的是**对话本身**——每一轮必须依赖之前的轮次(记住名字/职业、逐字复述第一轮的指令),并把每一轮原文打印出来。它会当场暴露"能返回 JSON 但其实在胡言乱语"的情况。
 
@@ -121,7 +121,7 @@ bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印
 
 ## 模型目录
 
-代理当前服务 **3 个 opencode zen 免费模型**。`GET /v1/models`(`supabase/functions/v1/models.ts`)按 OpenAI models-list 格式返回下表全部模型,每个条目携带 `reasoning`(是否思考)与 `reasoning_levels`(支持的思考强度档位,空数组 = 无档位控制)元数据,另有 `context_window` / `max_output_tokens` / `owned_by: "opencode-zen"`。所有模型共享免费匿名层:上游 API key 固定为字面量 `public`,按 IP 限额,无需注册;三个 API 门面(chat / responses / messages)对同一 model id 语义一致。
+代理当前服务 **3 个 opencode zen 免费模型**。`GET /v1/models`(`supabase/functions/muse-proxy/models.ts`)按 OpenAI models-list 格式返回下表全部模型,每个条目携带 `reasoning`(是否思考)与 `reasoning_levels`(支持的思考强度档位,空数组 = 无档位控制)元数据,另有 `context_window` / `max_output_tokens` / `owned_by: "opencode-zen"`。所有模型共享免费匿名层:上游 API key 固定为字面量 `public`,按 IP 限额,无需注册;三个 API 门面(chat / responses / messages)对同一 model id 语义一致。
 
 | 模型 ID | 名称 | 上游格式(出站路由) | 上下文窗口 | 最大输出 | 思考 | 思考强度档位 |
 |---|---|---|---|---|---|---|
@@ -135,7 +135,7 @@ bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印
 - **别名**:`model id 含 "muse"` 即匹配(如 `muse`、`muse-spark-1.3`)。
 - **思考**:支持**加密思考回放**——流式/聚合响应携带 `encrypted_content`(Responses 门面)或 `reasoning_details`(chat 门面),多轮对话原样透传回上游;Anthropic 门面的 `thinking.budget_tokens` 档位映射不变(`<2048→low`、`<8192→medium`、`<24576→high`、`≥24576→xhigh`,`disabled→none`)。
 - **路由格式**:唯一走 `responses` 上游的模型(`lower.ts` 直发 `/zen/v1/responses`)。
-- **定义处**:`supabase/functions/v1/_lib/types.ts` 的 `MUSE_INFO`。
+- **定义处**:`supabase/functions/muse-proxy/_lib/types.ts` 的 `MUSE_INFO`。
 
 ### mimo-v2.6-flash-free
 
@@ -143,17 +143,17 @@ bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印
 - **别名**:`model id 以 "mimo" 开头(大小写不敏感)即匹配——包括 zen 付费目录名 `mimo-v2.6-flash`(由免费上游变体服务)。
 - **思考**:reasoning **恒开且无法关闭**;`reasoning_effort` / `reasoning.effort` / `thinking.budget_tokens` 会被接受并静默丢弃(上游 200 但无效),`/v1/models` 不暴露档位,代理也不向下游发该字段。
 - **路由格式**:`oa-compat`(chat completions);走 `/v1/responses` 上游会直接 500,opencode CLI 同样经 `@ai-sdk/openai-compatible` 调用它。
-- **定义处**:`supabase/functions/v1/_lib/types.ts` 的 `MIMO_INFO`。
+- **定义处**:`supabase/functions/muse-proxy/_lib/types.ts` 的 `MIMO_INFO`。
 
 ### space-bunny-free
 
 - **定位**:匿名限时预览的推理模型,面向编码、agent 任务、工具调用与多模态输入(免费层,限时提供)。
 - **别名**:`model id 包含 "space-bunny"` 即匹配(如 `space-bunny`、`space-bunny-free-preview`)。
 - **思考**:reasoning 恒开;接受全部档位 `minimal/low/medium/high/xhigh/max`(比官方目录还多接受 `minimal`);请求 `none` 会被 `clampEffortForModel` 钳制为 `minimal`——直接转发上游会 400;Anthropic 门面 `thinking:{type:"disabled"}` 同样钳制为 `minimal`。
-- **并行工具调用**:同轮多个 `tool_calls` 必须合并在一条 `assistant` 消息里回放,拆成多条 `assistant` 消息(每条带一个调用)上游直接 400 `invalid_request_error`。网关客户端习惯并行调用,多轮后必触发,表现为“聊几句就报错”。代理已在 `supabase/functions/v1/_lib/chat-upstream.ts` 的 `lowerInputToMessages` 内把连续 `function_call` 聚合成一条 `assistant(content=null, tool_calls=[...])`,三个门面共用,无需客户端改形状。
+- **并行工具调用**:同轮多个 `tool_calls` 必须合并在一条 `assistant` 消息里回放,拆成多条 `assistant` 消息(每条带一个调用)上游直接 400 `invalid_request_error`。网关客户端习惯并行调用,多轮后必触发,表现为“聊几句就报错”。代理已在 `supabase/functions/muse-proxy/_lib/chat-upstream.ts` 的 `lowerInputToMessages` 内把连续 `function_call` 聚合成一条 `assistant(content=null, tool_calls=[...])`,三个门面共用,无需客户端改形状。
 - **路由格式**:`oa-compat`(chat completions);走 `/v1/responses` 上游返回 401 `ModelError: not supported for format openai`。
 
-> 上表的档位接受度均为 2026-09-24 逐档位实测结论(`scripts/probe-reasoning-efforts.ts`);路由与钳制逻辑集中在 `supabase/functions/v1/_lib/types.ts`(`resolveModel` / `clampEffortForModel`),三个门面共用,新增模型时先更新 `MODELS` 目录再跑 `bun run smoke:newmodels` 与 `bun run smoke:efforts`。
+> 上表的档位接受度均为 2026-09-24 逐档位实测结论(`scripts/probe-reasoning-efforts.ts`);路由与钳制逻辑集中在 `supabase/functions/muse-proxy/_lib/types.ts`(`resolveModel` / `clampEffortForModel`),三个门面共用,新增模型时先更新 `MODELS` 目录再跑 `bun run smoke:newmodels` 与 `bun run smoke:efforts`。
 
 ## 快速开始
 
@@ -162,7 +162,7 @@ bun install            # 或 npm install
 bun run test           # 180 个单元/集成/沙箱端到端测试(mock 上游,无需联网)
 bun run serve:edge     # 无 Docker 运行 Edge Function(Deno,$PORT,默认 8788)
 bun run smoke:edge     # Edge Function 真实上游 HTTP 套件(需先 serve:edge)
-bun run deploy:functions # supabase functions deploy v1
+bun run deploy:functions # supabase functions deploy muse-proxy
 bun run smoke          # 真实连通性冒烟(需联网,验证 stream:false 与 stream:true)
 bun run smoke:responses # /v1/responses 真实上游全功能冒烟(需联网,7 项 36 检查)
 bun run smoke:messages  # /v1/messages 真实上游全功能冒烟(需联网,8 项任务)
@@ -178,7 +178,7 @@ bun run typecheck
 
 ## OpenAI Responses 端点:`POST /v1/responses`
 
-除 chat completions 门面外,代理还直接暴露 OpenAI **Responses API** 规范端点(`supabase/functions/v1/responses.ts`,Edge Function 内部路由 `/v1/responses`)。上游本来就是 Responses API,因此该端点是**归一化 + 指纹修补**模式,与 chat 端点完全独立、互不影响(不共享可变逻辑;`lower.ts`/`chat.ts` 未被改动)。
+除 chat completions 门面外,代理还直接暴露 OpenAI **Responses API** 规范端点(`supabase/functions/muse-proxy/responses.ts`,Edge Function 内部路由 `/v1/responses`)。上游本来就是 Responses API,因此该端点是**归一化 + 指纹修补**模式,与 chat 端点完全独立、互不影响(不共享可变逻辑;`lower.ts`/`chat.ts` 未被改动)。
 
 ```bash
 curl -X POST https://your-proxy/v1/responses \
@@ -205,7 +205,7 @@ curl -X POST https://your-proxy/v1/responses \
 
 ## Anthropic Messages 端点:`POST /v1/messages`
 
-第三个门面:Anthropic **Messages API** 规范端点(`supabase/functions/v1/messages.ts`,Edge Function 内部路由 `/v1/messages`)。与 chat/responses 门面完全独立(`messages-lower.ts`/`messages-raise.ts` 是独立文件,`lower.ts`/`chat.ts`/`responses-lower.ts`/`responses.ts` 未被改动),但共享同一套 opencode 免费层指纹规则与 `PROXY_API_KEY` 鉴权。
+第三个门面:Anthropic **Messages API** 规范端点(`supabase/functions/muse-proxy/messages.ts`,Edge Function 内部路由 `/v1/messages`)。与 chat/responses 门面完全独立(`messages-lower.ts`/`messages-raise.ts` 是独立文件,`lower.ts`/`chat.ts`/`responses-lower.ts`/`responses.ts` 未被改动),但共享同一套 opencode 免费层指纹规则与 `PROXY_API_KEY` 鉴权。
 
 ```bash
 curl -X POST https://your-proxy/v1/messages \
@@ -302,7 +302,7 @@ curl -X POST https://your-proxy/v1/messages \
 
 核心思路:**让代理发出的每个请求都和真实 opencode CLI 无法区分**。
 
-### 3.1 `supabase/functions/v1/_lib/types.ts` — UA 与版本常量化
+### 3.1 `supabase/functions/muse-proxy/_lib/types.ts` — UA 与版本常量化
 
 ```ts
 export const OPENCODE_VERSION = "1.18.31"   // 跟随 npm opencode-ai 的 latest
@@ -311,11 +311,11 @@ export const OPENCODE_CLIENT = "cli"
 export const UPSTREAM_USER_AGENT = `opencode/${OPENCODE_CHANNEL}/${OPENCODE_VERSION}/${OPENCODE_CLIENT}`
 ```
 
-### 3.2 `supabase/functions/v1/_lib/identity.ts` — 复刻 opencode 的 ID 形状(新增)
+### 3.2 `supabase/functions/muse-proxy/_lib/identity.ts` — 复刻 opencode 的 ID 形状(新增)
 
 按 `Identifier.create` 的布局生成 26 字符 ID(`ses_`/`msg_`/`prt_` 前缀 + 12 位时间分量 + 14 位 base62),并对 `(callId, role)` 确定性生成——同一补发请求保持同一身份,模拟真实客户端的重试行为。
 
-### 3.3 `supabase/functions/v1/chat.ts` — 发送完整头指纹
+### 3.3 `supabase/functions/muse-proxy/chat.ts` — 发送完整头指纹
 
 ```ts
 const identity = identityForCall(completionId)
@@ -355,10 +355,10 @@ bun run eval   # agent 评测 21/21:流式、xhigh 思考、工具循环、多�
 
 ### 4.2 修复(已实施)
 
-- **`supabase/functions/v1/_lib/tools.ts`(新增)**:从真实 CLI 抓包逐字记录 11 个内置工具(`bash edit glob grep read skill task todowrite webfetch websearch write`)的完整定义。发送时描述替换为桩文案(`STUB_BUILTIN_TOOL_DESCRIPTION`),**防止模型自作主张调用客户端无法执行的 CLI 工具**(实测带真描述时模型会对普通问题自发调用 bash/read)。客户端声明的同名工具不覆盖内置定义。
-- **`supabase/functions/v1/_lib/lower.ts`**:每次请求强制 `[...11 内置工具, ...客户端工具]`;`tool_choice` 强制为 `"auto"`(上游只支持 auto/省略,`none`/`required`/命名函数全部 400);新支持 `prompt_cache_key`(CLI 发的是会话 ID,代理用 `x-opencode-session` 同值)。
-- **`supabase/functions/v1/_lib/types.ts`**:UA 更新为线上真实格式 `opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14`——注意开源仓库 `request.ts` 里构造的是另一种格式(`opencode/${version}`),**以线上抓包为准**;`x-opencode-project` 固定为 `"global"`(真实 CLI 全局会话的值);`UpstreamTool` 增加 `strict` 字段。
-- **`supabase/functions/v1/chat.ts`**:`accept: "*/*"`(与 CLI 一致);identity 先生成并传给 lower 以填充 `prompt_cache_key`。
+- **`supabase/functions/muse-proxy/_lib/tools.ts`(新增)**:从真实 CLI 抓包逐字记录 11 个内置工具(`bash edit glob grep read skill task todowrite webfetch websearch write`)的完整定义。发送时描述替换为桩文案(`STUB_BUILTIN_TOOL_DESCRIPTION`),**防止模型自作主张调用客户端无法执行的 CLI 工具**(实测带真描述时模型会对普通问题自发调用 bash/read)。客户端声明的同名工具不覆盖内置定义。
+- **`supabase/functions/muse-proxy/_lib/lower.ts`**:每次请求强制 `[...11 内置工具, ...客户端工具]`;`tool_choice` 强制为 `"auto"`(上游只支持 auto/省略,`none`/`required`/命名函数全部 400);新支持 `prompt_cache_key`(CLI 发的是会话 ID,代理用 `x-opencode-session` 同值)。
+- **`supabase/functions/muse-proxy/_lib/types.ts`**:UA 更新为线上真实格式 `opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14`——注意开源仓库 `request.ts` 里构造的是另一种格式(`opencode/${version}`),**以线上抓包为准**;`x-opencode-project` 固定为 `"global"`(真实 CLI 全局会话的值);`UpstreamTool` 增加 `strict` 字段。
+- **`supabase/functions/muse-proxy/chat.ts`**:`accept: "*/*"`(与 CLI 一致);identity 先生成并传给 lower 以填充 `prompt_cache_key`。
 
 ### 4.3 验证
 
@@ -372,12 +372,12 @@ bun run eval   # 16/16:多轮、真流式、xhigh 思考、web_search 循环、�
 
 按序检查,命中即修:
 
-1. **报错是否变了文案/状态码?** 收集当前 4xx 响应体,和 `supabase/functions/v1/_lib/errors.ts` 的映射对照。429→403 或新增 `FreeTierError` 字样 = 门槛升级信号。
+1. **报错是否变了文案/状态码?** 收集当前 4xx 响应体,和 `supabase/functions/muse-proxy/_lib/errors.ts` 的映射对照。429→403 或新增 `FreeTierError` 字样 = 门槛升级信号。
 2. **重抓基准。** 用 `scripts/capture-server.ts` 抓一份**当前版本**真实 CLI 的完整请求(头+体),精确重放确认 200。这份抓包是后续所有二分的基础。
-3. **版本号过期?** `npm view opencode-ai version`,更新 `supabase/functions/v1/_lib/types.ts` 的 `OPENCODE_VERSION`。上游大版本发布后这几乎总是第一步。
-4. **头指纹变了?** 对比抓包头与 `supabase/functions/v1/chat.ts` 发的头集合(新增头?删除头?UA 格式?)。注意:**仓库源码的 UA 构造可能与线上二进制不一致**,以抓包为准。
-5. **ID 形状变了?** 对照 `packages/opencode/src/id/id.ts` 的 `Identifier.create`(前缀、长度、时间分量布局),必要时更新 `supabase/functions/v1/_lib/identity.ts`。探针测 25/26/27 字符与 UUID 即可确认。
-6. **请求体指纹变了?(2026-09-18 新增此类)** 用抓包体做消融:删 tools / 换 tools / 加 `reasoning` / 改 `prompt_cache_key` / 首条 role 换 `system`,一次只改一项,找到被校验的新字段。内置工具清单存于 `supabase/functions/v1/_lib/tools.ts`,若 CLI 工具集变化则重抓刷新该数组。
+3. **版本号过期?** `npm view opencode-ai version`,更新 `supabase/functions/muse-proxy/_lib/types.ts` 的 `OPENCODE_VERSION`。上游大版本发布后这几乎总是第一步。
+4. **头指纹变了?** 对比抓包头与 `supabase/functions/muse-proxy/chat.ts` 发的头集合(新增头?删除头?UA 格式?)。注意:**仓库源码的 UA 构造可能与线上二进制不一致**,以抓包为准。
+5. **ID 形状变了?** 对照 `packages/opencode/src/id/id.ts` 的 `Identifier.create`(前缀、长度、时间分量布局),必要时更新 `supabase/functions/muse-proxy/_lib/identity.ts`。探针测 25/26/27 字符与 UUID 即可确认。
+6. **请求体指纹变了?(2026-09-18 新增此类)** 用抓包体做消融:删 tools / 换 tools / 加 `reasoning` / 改 `prompt_cache_key` / 首条 role 换 `system`,一次只改一项,找到被校验的新字段。内置工具清单存于 `supabase/functions/muse-proxy/_lib/tools.ts`,若 CLI 工具集变化则重抓刷新该数组。
 7. **上游 API 支持面变了?** 例如 `tool_choice` 现在只支持 `"auto"`;留意 400 响应里的 `param` 字段直接指出被拒参数。
 8. **报错文案 grep 不到?** 校验在闭源边缘服务里,别浪费时间翻 CLI 逻辑,专注完整模仿客户端指纹(头 + 体)。
 9. **免费模型 ID 变了?** 留意 zen 模型目录与 `MODEL_ID`(`muse-spark-1.3-contributor-free`)。
@@ -388,4 +388,4 @@ bun run eval   # 16/16:多轮、真流式、xhigh 思考、web_search 循环、�
 - 指纹模仿的是**无凭据的免费匿名层**,按 IP 限额;请勿用于绕过付费或大规模滥用,上游随时可能再次收紧。
 - 内置工具只以**桩描述**发送(名字是真的,描述声明不可用):模型不会自发调用客户端无法执行的 CLI 工具;代理的兼容性目标是让 OpenAI 客户端自己的工具调用正常工作。
 - 代理无状态,不落盘任何会话数据;加密思考内容(`encrypted_content`)按上游要求原样回传以支持多轮思考回放。
-- `MODEL_ID` 把所有请求映射到免费模型;如需接入其他模型,改 `supabase/functions/v1/_lib/types.ts` 的 `MODEL_ID` 并确认上游允许。
+- `MODEL_ID` 把所有请求映射到免费模型;如需接入其他模型,改 `supabase/functions/muse-proxy/_lib/types.ts` 的 `MODEL_ID` 并确认上游允许。

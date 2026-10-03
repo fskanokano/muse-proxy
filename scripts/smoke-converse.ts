@@ -11,7 +11,7 @@
 // Runs against the served edge function (see EDGE_BASE_URL), i.e. the bundled
 // artifact behind the gateway, with real traffic to opencode zen.
 
-const BASE = (process.env.EDGE_BASE_URL ?? "http://127.0.0.1:8788/functions/v1/v1").replace(/\/+$/, "")
+const BASE = (process.env.EDGE_BASE_URL ?? "http://127.0.0.1:8788/functions/v1/muse-proxy/v1").replace(/\/+$/, "")
 const KEY = process.env.PROXY_API_KEY ?? ""
 const MODELS = ["muse-spark-1.3-contributor-free", "mimo-v2.6-flash-free", "space-bunny-free"]
 

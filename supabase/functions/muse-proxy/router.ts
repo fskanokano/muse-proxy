@@ -1,14 +1,14 @@
-// Path router for the `v1` Supabase Edge Function.
+// Path router for the `muse-proxy` Supabase Edge Function.
 //
-// The function is mounted at `/functions/v1/v1`, so the deployed URLs are
+// The function is mounted at `/functions/v1/muse-proxy`, so the deployed URLs are
 // exactly the OpenAI / Anthropic paths:
 //
-//   POST https://<ref>.supabase.co/functions/v1/v1/chat/completions
-//   POST https://<ref>.supabase.co/functions/v1/v1/responses
-//   POST https://<ref>.supabase.co/functions/v1/v1/messages
-//   GET  https://<ref>.supabase.co/functions/v1/v1/models
+//   POST https://<ref>.supabase.co/functions/v1/muse-proxy/v1/chat/completions
+//   POST https://<ref>.supabase.co/functions/v1/muse-proxy/v1/responses
+//   POST https://<ref>.supabase.co/functions/v1/muse-proxy/v1/messages
+//   GET  https://<ref>.supabase.co/functions/v1/muse-proxy/v1/models
 //
-// i.e. OpenAI SDKs point `base_url` at `https://<ref>.supabase.co/functions/v1/v1`
+// i.e. OpenAI SDKs point `base_url` at `https://<ref>.supabase.co/functions/v1/muse-proxy/v1`
 // and Anthropic SDKs at `https://<ref>.supabase.co/functions/v1` — no per-client
 // URL rewriting needed. One function, four routes: it boots once and keeps the
 // instance warm across endpoints (the alternative, one function per endpoint,
@@ -37,10 +37,17 @@ type Route = "chat" | "responses" | "messages" | "models"
 /**
  * Prefixes the gateway (or `supabase functions serve`) may prepend before the
  * function's own sub-path. The first match wins, longest first, so
- * `/functions/v1/v1/chat/completions` is not mistaken for the function's
+ * `/functions/v1/muse-proxy/chat/completions` is not mistaken for the function's
  * `/functions/v1` mount plus a `v1/chat/completions` route.
+ *
+ * `/muse-proxy/...` is the OpenAI-compatible sub-path INSIDE the function
+ * (keeps the old `/v1/...` client URL shape working after the function was
+ * renamed from `v1` to `muse-proxy`): the full gateway path is
+ * `/functions/v1/muse-proxy/v1/chat/completions`, and after stripping the
+ * `/functions/v1/muse-proxy` mount the remainder is `/v1/chat/completions`,
+ * which still needs one more strip before matching ROUTES.
  */
-const MOUNT_PREFIXES = ["/functions/v1/v1", "/functions/v1", "/v1"]
+const MOUNT_PREFIXES = ["/functions/v1/muse-proxy", "/functions/v1", "/muse-proxy", "/v1"]
 
 const ROUTES: Record<string, Route> = {
   "/chat/completions": "chat",
@@ -50,15 +57,22 @@ const ROUTES: Record<string, Route> = {
 }
 
 // Strip the mount point and any trailing slash so one matcher serves both the
-// hosted gateway and a bare `/functions/v1/<name>` local serve.
+// hosted gateway and a bare `/functions/v1/<name>` local serve. Stripping
+// repeats: the full gateway path is `/functions/v1/muse-proxy/v1/models` —
+// first the gateway mount goes, then the in-function `/v1` API prefix.
 export function normalizePath(pathname: string): string {
   let path = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname
-  for (const prefix of MOUNT_PREFIXES) {
-    if (path === prefix) return "/"
-    if (path.startsWith(`${prefix}/`)) {
-      path = path.slice(prefix.length)
-      break
+  for (let i = 0; i < 2; i++) {
+    let stripped = false
+    for (const prefix of MOUNT_PREFIXES) {
+      if (path === prefix) return "/"
+      if (path.startsWith(`${prefix}/`)) {
+        path = path.slice(prefix.length)
+        stripped = true
+        break
+      }
     }
+    if (!stripped) break
   }
   return path === "" ? "/" : path
 }
@@ -86,8 +100,8 @@ function rootIndex(path: string): Response {
     JSON.stringify({
       service: "muse-proxy",
       runtime: "supabase-edge-functions",
-      function: "v1",
-      mount: "/functions/v1/v1",
+      function: "muse-proxy",
+      mount: "/functions/v1/muse-proxy",
       endpoints: ["POST /v1/chat/completions", "POST /v1/responses", "POST /v1/messages", "GET /v1/models"],
       auth: "send `Authorization: Bearer $PROXY_API_KEY` (or `x-api-key`) — the gateway JWT check is off (verify_jwt=false), so no Supabase apikey is needed",
       requested_path: path,

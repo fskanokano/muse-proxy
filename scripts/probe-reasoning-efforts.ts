@@ -2,9 +2,9 @@
 // value, build a real gate-passing chat-completions request via
 // lowerChatUpstream and see whether the zen oa-compat edge accepts it.
 // Usage: bun run scripts/probe-reasoning-efforts.ts [model ...]
-import { lowerChatUpstream } from "../supabase/functions/v1/_lib/chat-upstream.ts"
-import { identityForCall } from "../supabase/functions/v1/_lib/identity.ts"
-import { MODELS, OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT } from "../supabase/functions/v1/_lib/types.ts"
+import { lowerChatUpstream } from "../supabase/functions/muse-proxy/_lib/chat-upstream.ts"
+import { identityForCall } from "../supabase/functions/muse-proxy/_lib/identity.ts"
+import { MODELS, OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT } from "../supabase/functions/muse-proxy/_lib/types.ts"
 
 const OA_COMPAT_URL = "https://opencode.ai/zen/v1/chat/completions"
 const MODELS_TO_PROBE = process.argv.slice(2).length > 0

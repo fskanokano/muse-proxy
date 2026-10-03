@@ -11,15 +11,15 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    // The Supabase Edge Function tree (supabase/functions/v1/**) uses explicit
+    // The Supabase Edge Function tree (supabase/functions/muse-proxy/**) uses explicit
     // `.ts` import specifiers because that is what the Deno resolver requires;
     // `api/**` re-exports those modules for the Vercel shell.
     "allowImportingTsExtensions": true
   },
-  "include": ["api/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "supabase/functions/v1/**/*.ts"],
+  "include": ["api/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "supabase/functions/muse-proxy/**/*.ts"],
   // index.ts and the Deno runner scripts are Deno entrypoints: they touch
   // `Deno.env` / `Deno.serve` / `Deno.Command`, which the Node-oriented project
   // tsconfig does not model. Typecheck them with `bun run typecheck:edge`
   // (deno check) instead.
-  "exclude": ["supabase/functions/v1/index.ts", "scripts/serve-edge.ts", "scripts/fake-supabase.ts"]
+  "exclude": ["supabase/functions/muse-proxy/index.ts", "scripts/serve-edge.ts", "scripts/fake-supabase.ts"]
 }

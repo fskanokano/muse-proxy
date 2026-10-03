@@ -1,4 +1,4 @@
-// POST /v1/messages (Supabase Edge Function `v1`) — Anthropic Messages API
+// POST /v1/messages (Supabase Edge Function `muse-proxy`) — Anthropic Messages API
 // facade, independent from the chat completions (api/chat.ts) and Responses
 // (api/responses.ts) facades.
 //

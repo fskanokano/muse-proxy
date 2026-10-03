@@ -8,7 +8,7 @@
 // What this reproduces, and why it is worth it:
 //
 //   1. `bun run bundle:function` runs `deno bundle` over
-//      supabase/functions/v1/index.ts -> supabase/.temp/v1-bundle.js — one
+//      supabase/functions/muse-proxy/index.ts -> supabase/.temp/muse-proxy-bundle.js — one
 //      self-contained file, exactly the artifact the CLI uploads. Previous
 //      testing ran the TypeScript source tree, which cannot catch
 //      bundling-only breakage (a stray dynamic import, a file outside the
@@ -28,7 +28,7 @@
 const REPO_ROOT = new URL("../", import.meta.url).pathname.replace(/\/$/, "")
 const FUNCTION_DIR = `${REPO_ROOT}/supabase/functions`
 const CONFIG = `${REPO_ROOT}/supabase/config.toml`
-const FUNCTION_NAME = "v1"
+const FUNCTION_NAME = "muse-proxy"
 // The bundle calls `Deno.serve(handler)` with no options, so it always binds
 // this port. Override only if something else already owns it.
 const FUNCTION_PORT = Number(Deno.env.get("FAKE_SUPABASE_FUNCTION_PORT") ?? "8000")
@@ -134,7 +134,7 @@ async function main(): Promise<void> {
   })
 
   console.log(`[fake-supabase] gateway listening on http://${GATEWAY_HOST}:${GATEWAY_PORT}`)
-  console.log(`[fake-supabase] try: curl -H "Authorization: Bearer $PROXY_API_KEY" http://127.0.0.1:${GATEWAY_PORT}/functions/v1/v1/models`)
+  console.log(`[fake-supabase] try: curl -H "Authorization: Bearer $PROXY_API_KEY" http://127.0.0.1:${GATEWAY_PORT}/functions/v1/muse-proxy/v1/models`)
   if (!Deno.env.get("PROXY_API_KEY")) {
     console.warn("[fake-supabase] warning: PROXY_API_KEY is unset — every request fails closed with 401")
   }

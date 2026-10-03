@@ -6,9 +6,9 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { handleMessagesRequest, type MessagesDependencies } from "../api/messages"
-import { lowerMessagesRequest } from "../supabase/functions/v1/_lib/messages-lower.ts"
-import { MODEL_ID } from "../supabase/functions/v1/_lib/types.ts"
-import { OPENCODE_BUILTIN_TOOLS, STUB_BUILTIN_TOOL_DESCRIPTION } from "../supabase/functions/v1/_lib/tools.ts"
+import { lowerMessagesRequest } from "../supabase/functions/muse-proxy/_lib/messages-lower.ts"
+import { MODEL_ID } from "../supabase/functions/muse-proxy/_lib/types.ts"
+import { OPENCODE_BUILTIN_TOOLS, STUB_BUILTIN_TOOL_DESCRIPTION } from "../supabase/functions/muse-proxy/_lib/tools.ts"
 
 const ENV = { PROXY_API_KEY: "test-key" }
 const AUTH = { "x-api-key": "test-key" }
