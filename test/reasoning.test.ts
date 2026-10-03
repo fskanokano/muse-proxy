@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { decodeReasoningDetails, encodeReasoningDetails, sanitizeReplayItems } from "../api/_lib/reasoning"
+import { decodeReasoningDetails, encodeReasoningDetails, sanitizeReplayItems } from "../supabase/functions/v1/_lib/reasoning.ts"
 
 const item = (id: string, encrypted: string, summary = "") => ({ id, encrypted_content: encrypted, summary })
 

@@ -3,8 +3,8 @@
 // back into a FULL canonical Responses event lifecycle.
 
 import { describe, expect, it } from "vitest"
-import { OaCompatRaiser, isDonePayload, lowerChatUpstream, lowerInputToMessages, toolsToChatShape } from "../api/_lib/chat-upstream"
-import { MODELS, resolveModel, MODEL_MUSE, type UpstreamInputItem, type UpstreamTool } from "../api/_lib/types"
+import { OaCompatRaiser, isDonePayload, lowerChatUpstream, lowerInputToMessages, toolsToChatShape } from "../supabase/functions/v1/_lib/chat-upstream.ts"
+import { MODELS, resolveModel, MODEL_MUSE, type UpstreamInputItem, type UpstreamTool } from "../supabase/functions/v1/_lib/types.ts"
 import { modelsList } from "../api/models"
 
 describe("lowerInputToMessages", () => {

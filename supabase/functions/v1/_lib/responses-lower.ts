@@ -23,8 +23,8 @@ import {
   type UpstreamRequest,
   type UpstreamTool,
   type UpstreamToolChoice,
-} from "./types.js"
-import { appendClientTools } from "./tools.js"
+} from "./types.ts"
+import { appendClientTools } from "./tools.ts"
 
 export type NormalizeResult =
   | { request: UpstreamRequest; stream: boolean; clientToolNames: Set<string>; nsPrefixByBare: Map<string, string>; customToolNames: Set<string> }

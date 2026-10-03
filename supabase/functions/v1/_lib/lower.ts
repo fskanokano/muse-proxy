@@ -10,7 +10,7 @@
 // builtin set (descriptions stubbed so the model never calls a tool the
 // OpenAI client cannot execute) with the client's own tools appended.
 
-import { OPENCODE_BUILTIN_TOOLS, STUB_BUILTIN_TOOL_DESCRIPTION } from "./tools.js"
+import { OPENCODE_BUILTIN_TOOLS, STUB_BUILTIN_TOOL_DESCRIPTION } from "./tools.ts"
 import {
   DEFAULT_REASONING_EFFORT,
   MAX_OUTPUT_TOKENS,
@@ -21,7 +21,7 @@ import {
   type UpstreamRequest,
   type UpstreamTool,
   type UpstreamToolChoice,
-} from "./types.js"
+} from "./types.ts"
 
 export type LowerResult =
   | { request: UpstreamRequest; clientToolNames: Set<string> }

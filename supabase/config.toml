@@ -1,0 +1,30 @@
+# Supabase project configuration for muse-proxy.
+#
+# Only the Edge Runtime is used — this project has no Postgres schema, no Data
+# API usage and no Auth; it is a stateless proxy deployed as a single Edge
+# Function. Run `supabase init` in a scratch directory and diff against
+# https://supabase.com/docs/guides/local-development/cli/config if you need a
+# section this file does not set (the CLI fills in defaults for anything
+# omitted, so the file stays small on purpose).
+
+project_id = "muse-proxy"
+
+[edge_runtime]
+enabled = true
+# `oneshot` instead of the default `per_worker`: the proxy holds no state
+# between requests and is deployed through the API, so a persistent worker buys
+# nothing here.
+policy = "per_worker"
+inspector_port = 8083
+# Deno 2 — the runtime every `supabase functions serve` / `deploy` uses.
+deno_version = 2
+
+[functions.v1]
+# The proxy authenticates with its own PROXY_API_KEY
+# (`Authorization: Bearer …` or `x-api-key`, see supabase/functions/v1/_lib/auth.ts),
+# NOT with a Supabase user JWT, so the gateway JWT check is disabled. The
+# gateway still requires the Supabase `apikey` header on every request.
+verify_jwt = false
+
+[analytics]
+enabled = false

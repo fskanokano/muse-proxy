@@ -2,9 +2,9 @@
 // upstream body with muse-proxy's own lowerRequest + identityForCall, then
 // swap ONLY the model id to see how the zen edge routes each free model.
 // Usage: bun run scripts/probe-model-routing.ts [model ...]
-import { lowerRequest } from "../api/_lib/lower"
-import { identityForCall } from "../api/_lib/identity"
-import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT } from "../api/_lib/types"
+import { lowerRequest } from "../supabase/functions/v1/_lib/lower.ts"
+import { identityForCall } from "../supabase/functions/v1/_lib/identity.ts"
+import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT } from "../supabase/functions/v1/_lib/types.ts"
 
 const MODELS = process.argv.slice(2).length > 0
   ? process.argv.slice(2)

@@ -16,7 +16,7 @@
 //
 // If the gate trips again, re-capture a real CLI request with
 // scripts/capture-server.ts and refresh this array (README -> troubleshooting).
-import type { UpstreamTool } from "./types.js"
+import type { UpstreamTool } from "./types.ts"
 
 export const OPENCODE_BUILTIN_TOOLS: UpstreamTool[] = [
   {

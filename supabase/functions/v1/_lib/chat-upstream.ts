@@ -30,9 +30,9 @@
 //         ignored. space-bunny sometimes aggregates the whole message into a
 //         single frame and uses delta.reasoning_content instead.
 
-import type { ModelInfo, UpstreamInputItem, UpstreamTool } from "./types.js"
-import { appendClientTools } from "./tools.js"
-import { clampEffortForModel } from "./types.js"
+import type { ModelInfo, UpstreamInputItem, UpstreamTool } from "./types.ts"
+import { appendClientTools } from "./tools.ts"
+import { clampEffortForModel } from "./types.ts"
 
 export type ChatUpstreamRequest = {
   model: string

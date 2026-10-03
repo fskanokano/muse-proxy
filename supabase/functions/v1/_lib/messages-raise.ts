@@ -12,8 +12,8 @@
 // finish() emits an Anthropic `error` event so clients never mistake a
 // truncated stream for a complete message.
 
-import { shouldExposeToolCall } from "./tools.js"
-import type { UpstreamEvent } from "./types.js"
+import { shouldExposeToolCall } from "./tools.ts"
+import type { UpstreamEvent } from "./types.ts"
 
 export interface AnthropicEvent {
   type: string

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { createRaiser } from "../api/_lib/raise"
+import { createRaiser } from "../supabase/functions/v1/_lib/raise.ts"
 
 const ID = "chatcmpl-test"
 const CREATED = 1_700_000_000

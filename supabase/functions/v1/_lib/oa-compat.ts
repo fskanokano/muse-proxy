@@ -12,10 +12,10 @@
 //      layers used on the muse path — so all facade semantics (tool exposure,
 //      heartbeats, terminal-event guards) stay identical.
 
-import { OaCompatRaiser, isDonePayload, lowerChatUpstream, raiseOaCompatChunk } from "./chat-upstream.js"
-import { parseUpstreamSse } from "./sse.js"
-import type { ModelInfo, UpstreamInputItem, UpstreamTool } from "./types.js"
-import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT } from "./types.js"
+import { OaCompatRaiser, isDonePayload, lowerChatUpstream, raiseOaCompatChunk } from "./chat-upstream.ts"
+import { parseUpstreamSse } from "./sse.ts"
+import type { ModelInfo, UpstreamInputItem, UpstreamTool } from "./types.ts"
+import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT } from "./types.ts"
 
 const OA_COMPAT_URL = "https://opencode.ai/zen/v1/chat/completions"
 

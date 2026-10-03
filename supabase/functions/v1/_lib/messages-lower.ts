@@ -24,7 +24,7 @@
 //   - stop_sequences / metadata / top_k are accepted but ignored (upstream
 //     has no equivalent or effect)
 
-import { appendClientTools } from "./tools.js"
+import { appendClientTools } from "./tools.ts"
 import {
   DEFAULT_REASONING_EFFORT,
   MAX_OUTPUT_TOKENS,
@@ -33,7 +33,7 @@ import {
   type UpstreamInputItem,
   type UpstreamRequest,
   type UpstreamTool,
-} from "./types.js"
+} from "./types.ts"
 
 export type LowerResult =
   | { request: UpstreamRequest; clientToolNames: Set<string> }

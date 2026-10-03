@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { checkAuth } from "../api/_lib/auth"
+import { checkAuth } from "../supabase/functions/v1/_lib/auth.ts"
 
 function req(headers: Record<string, string>): Request {
   return new Request("https://proxy.example/v1/chat/completions", { headers })

@@ -1,4 +1,4 @@
-import type { ChatChunk } from "./types.js"
+import type { ChatChunk } from "./types.ts"
 
 // ---------------------------------------------------------------------------
 // OpenAI-shaped error JSON

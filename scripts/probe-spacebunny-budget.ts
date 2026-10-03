@@ -5,9 +5,9 @@
 // "invalid request" from the space-bunny oa-compat edge (network required).
 // Usage: bun run scripts/probe-spacebunny-budget.ts
 
-import { lowerChatUpstream } from "../api/_lib/chat-upstream"
-import { identityForCall } from "../api/_lib/identity"
-import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT } from "../api/_lib/types"
+import { lowerChatUpstream } from "../supabase/functions/v1/_lib/chat-upstream.ts"
+import { identityForCall } from "../supabase/functions/v1/_lib/identity.ts"
+import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT } from "../supabase/functions/v1/_lib/types.ts"
 
 const OA_COMPAT_URL = "https://opencode.ai/zen/v1/chat/completions"
 const MODEL = process.env.PROBE_MODEL ?? "space-bunny-free"

@@ -20,7 +20,7 @@
 
 import * as http from "node:http"
 import { handleChatRequest } from "../api/chat"
-import { resolveModel } from "../api/_lib/types"
+import { resolveModel } from "../supabase/functions/v1/_lib/types.ts"
 
 const PORT = 8961
 const KEY = process.env.PROXY_API_KEY ?? "probe-key"
