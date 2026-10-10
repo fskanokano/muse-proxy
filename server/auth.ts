@@ -57,3 +57,13 @@ export function bearerToken(headers: Headers): string {
   const h = headers.get("authorization") ?? "";
   return h.startsWith("Bearer ") ? h.slice(7) : "";
 }
+
+/**
+ * 网关子系统内部通道校验: 网关 API 层已验过管理员登录, 此处只认双方共享的
+ * 内部钥 (x-mp-internal-key)。与密码/token 体系独立, 钥为空即通道关闭。
+ */
+export function verifyInternalKey(headers: Headers): boolean {
+  if (!env.internalKey) return false;
+  const got = headers.get("x-mp-internal-key") ?? "";
+  return got.length > 0 && timingSafeEqual(got, env.internalKey);
+}

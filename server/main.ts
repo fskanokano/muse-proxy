@@ -19,7 +19,7 @@ import { handleRequest } from "../supabase/functions/muse-proxy/router.js";
 import { env, getSettings, saveSettings, resolveStaticDir } from "./config.js";
 import { discoverSync, refreshPublicIps, createRequestFetcher, type Discovery } from "./egress.js";
 import { logRequest } from "./logger.js";
-import { verifyPassword, signToken, verifyToken, bearerToken } from "./auth.js";
+import { verifyPassword, signToken, verifyToken, bearerToken, verifyInternalKey } from "./auth.js";
 import { incomingToRequest, respondWithWeb } from "./bridge.js";
 import { readLogs } from "./logger.js";
 
@@ -111,15 +111,24 @@ async function handleAdminApi(req: http.IncomingMessage, res: http.ServerRespons
     return true;
   }
 
-  // 其余一律鉴权 (Authorization 或 x-admin-key 任一, 后者供网关挂载时使用)。
+  // 其余一律鉴权: 内部通道 (网关子系统, x-mp-internal-key) 或
+  // 后台 token (Authorization 或 x-admin-key, 直接登录用)。
   let authed = false;
+  let viaInternal = false;
   try {
     const headers = new Headers();
     const h = req.headers.authorization;
     if (typeof h === "string") headers.set("authorization", h);
     const ak = req.headers["x-admin-key"];
     headers.set("x-admin-key", Array.isArray(ak) ? ak[0] ?? "" : ak ?? "");
-    authed = verifyToken(bearerToken(headers));
+    const ik = req.headers["x-mp-internal-key"];
+    headers.set("x-mp-internal-key", Array.isArray(ik) ? ik[0] ?? "" : ik ?? "");
+    if (verifyInternalKey(headers)) {
+      authed = true;
+      viaInternal = true;
+    } else {
+      authed = verifyToken(bearerToken(headers));
+    }
   } catch {
     authed = false;
   }
@@ -127,6 +136,7 @@ async function handleAdminApi(req: http.IncomingMessage, res: http.ServerRespons
     json(res, 401, { error: "unauthorized" });
     return true;
   }
+  void viaInternal;
 
   if (sub === "egress" && req.method === "GET") {
     const settings = getSettings();

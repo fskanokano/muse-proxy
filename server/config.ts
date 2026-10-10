@@ -7,8 +7,10 @@ export const env = {
   bind: process.env.MP_BIND || "127.0.0.1",
   /** 客户端访问本服务的 API key (透传给各门面的 PROXY_API_KEY 校验)。 */
   proxyApiKey: process.env.PROXY_API_KEY || "",
-  /** 后台管理员密码 (登录用, 必填)。 */
+  /** 后台管理员密码 (直接登录用; 子系统通道用内部钥, 两者独立)。 */
   adminPassword: process.env.MP_ADMIN_PASSWORD || "",
+  /** 网关子系统内部钥 (与网关 MP_INTERNAL_KEY 一致; 为空则内部通道关闭)。 */
+  internalKey: process.env.MP_INTERNAL_KEY || "",
   dataDir: process.env.MP_DATA_DIR || path.resolve(process.cwd(), "data"),
   /** 管理后台静态目录 (admin-web 构建产物; 为空则自动探测)。 */
   staticDirOverride: process.env.MP_STATIC_DIR || "",
