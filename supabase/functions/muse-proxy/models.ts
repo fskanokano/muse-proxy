@@ -20,7 +20,13 @@ export interface ModelsEnv {
 
 // Reasoning-capable models (mirrors the models.opencode.ai catalog: every
 // muse/zen free model here reasons; mimo just has no effort levels).
-const REASONING_MODELS = new Set(["muse-spark-1.3-contributor-free", "mimo-v2.6-flash-free", "space-bunny-free"])
+// step-5 reasoning is mandatory (upstream 400 without effort).
+const REASONING_MODELS = new Set([
+  "muse-spark-1.3-contributor-free",
+  "mimo-v2.6-flash-free",
+  "space-bunny-free",
+  "step-5-preview-free",
+])
 
 export function modelsList(created: number) {
   return {

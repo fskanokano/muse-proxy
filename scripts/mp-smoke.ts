@@ -1,5 +1,6 @@
 // mp 本地冒烟: 健康 + 模型表 + 后台 + 真上游 SSE (只读, 不改模式)。
 // 用法: MP_BASE=http://127.0.0.1:18091 MP_TEST_KEY=<PROXY_API_KEY> MP_ADMIN_PASSWORD=<pwd> bun run scripts/mp-smoke.ts
+export {};
 const BASE = process.env.MP_BASE ?? "http://127.0.0.1:18091";
 const KEY = process.env.MP_TEST_KEY ?? "";
 const ADMIN = process.env.MP_ADMIN_PASSWORD ?? "";
