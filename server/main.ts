@@ -198,12 +198,17 @@ async function handleAdminApi(req: http.IncomingMessage, res: http.ServerRespons
 
   if (sub === "logs" && req.method === "GET") {
     const u = new URL(req.url ?? "/admin/api/logs", "http://localhost");
+    const limit = Math.min(Math.max(Number(u.searchParams.get("limit") ?? 200), 1), 2000);
+    const offset = Math.max(Number(u.searchParams.get("offset") ?? 0), 0);
+    // 先读足量再过滤分页: 日志只暴露业务请求 (/v1/*), /admin/* 等管理请求
+    // 新版本已不再记录, 此处再滤一次兼容旧落盘。
     const out = readLogs({
       q: u.searchParams.get("q") ?? undefined,
-      limit: Number(u.searchParams.get("limit") ?? 200),
-      offset: Number(u.searchParams.get("offset") ?? 0),
+      limit: 2000,
+      offset: 0,
     });
-    json(res, 200, out);
+    const biz = out.items.filter((e) => typeof e.uri === "string" && e.uri.startsWith("/v1/"));
+    json(res, 200, { total: biz.length, items: biz.slice(offset, offset + limit) });
     return true;
   }
 
@@ -267,7 +272,11 @@ const server = http.createServer((req, res) => {
   void (async () => {
     const t0 = Date.now();
     const pathname = ((req.url ?? "/").split("?")[0] ?? "/");
+    // 日志只记业务请求 (/v1/* 的 AI 调用): 后台管理 (/admin/*)、静态资源、
+    // 存活探针、自述与 404 探测一律不记, 日志页只看得到真实业务流量。
+    const shouldLog = pathname.startsWith("/v1/");
     const finish = (status: number, extra: Partial<import("./logger.js").MpLogEntry> = {}) => {
+      if (!shouldLog) return;
       logRequest({
         time: new Date().toISOString(),
         method: req.method ?? "GET",
