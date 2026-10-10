@@ -3,12 +3,15 @@
 // endpoint, and raises the oa-compat SSE stream back into the opencode zen
 // Responses events the existing raise layers already understand.
 //
-// WHY THIS EXISTS: the zen edge routes every model by format, and the two new
-// free models only live on the oa-compat format (probed 2026-09-24):
+// WHY THIS EXISTS: the zen edge routes every model by format, and the three new
+// free models only live on the oa-compat format (probed 2026-09-24 / 2026-10-10):
 //   - mimo-v2.6-flash-free: on /v1/responses the upstream 500s; the CLI ships
 //     it via @ai-sdk/openai-compatible (chat completions).
 //   - space-bunny-free: on /v1/responses it 401s "Model space-bunny-free is
 //     not supported for format openai".
+//   - step-5-preview-free: docs + models.opencode.ai catalog route it to
+//     /zen/v1/chat/completions via @ai-sdk/openai-compatible (verified 200 on
+//     the real edge, scripts/probe-step5-connect.ts).
 // muse-spark-1.3-contributor-free keeps using the Responses upstream and the
 // untouched lower*.ts path; this module only serves the new models.
 //
@@ -29,6 +32,10 @@
 //         then a trailing {"choices":[],"cost":{...}} frame that must be
 //         ignored. space-bunny sometimes aggregates the whole message into a
 //         single frame and uses delta.reasoning_content instead.
+//   step-5: delta.reasoning (+ reasoning_details) exactly like mimo, tool
+//         calls with streamed arguments, finish "stop"/"tool_calls", a usage
+//         chunk (with reasoning_tokens) on tool runs, [DONE]; no trailing
+//         cost frame observed (scripts/probe-step5-connect.ts).
 
 import type { ModelInfo, UpstreamInputItem, UpstreamTool } from "./types.ts"
 import { appendClientTools } from "./tools.ts"

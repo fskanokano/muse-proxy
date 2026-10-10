@@ -1,14 +1,14 @@
-// Real end-to-end smoke for the two new free models (mimo-v2.6-flash-free,
-// space-bunny-free) across all three facades against the REAL opencode zen
-// upstream (network required).
+// Real end-to-end smoke for the new free models (mimo-v2.6-flash-free,
+// space-bunny-free, step-5-preview-free) across all three facades against the
+// REAL opencode zen upstream (network required).
 // Usage: bun run smoke:newmodels
 //
-// Unlike the muse facades (which hit /zen/v1/responses), these two models are
+// Unlike the muse facades (which hit /zen/v1/responses), these models are
 // routed by resolveModel() onto the oa-compat upstream (/zen/v1/chat/
 // completions). This script boots the same local server used by smoke:messages
 // (all three facades on one port) and proves, over real HTTP with the real
 // free-tier fingerprint:
-//   per model (mimo + space-bunny):
+//   per model (mimo + space-bunny + step-5):
 //     1. chat completions non-streaming (aggregated chat.completion + usage)
 //     2. chat completions streaming (SSE chunks, [DONE], model id echoed)
 //     3. responses non-streaming (aggregated response object + output_text)
@@ -30,7 +30,7 @@ import { handleMessagesRequest } from "../api/messages"
 const PORT = 8912
 const KEY = process.env.PROXY_API_KEY ?? "smoke-key"
 const BASE = `http://127.0.0.1:${PORT}`
-const MODELS = ["mimo-v2.6-flash-free", "space-bunny-free"]
+const MODELS = ["mimo-v2.6-flash-free", "space-bunny-free", "step-5-preview-free"]
 
 let passed = 0
 const failures: string[] = []
@@ -86,7 +86,7 @@ function startServer(): Promise<void> {
   })
 }
 
-function post(path: string, body: unknown, auth: Record<string, string> = { authorization: `Bearer ${KEY}` }, timeoutMs = 240_000): Promise<Response> {
+function post(path: string, body: unknown, auth: Record<string, string> = { authorization: `Bearer ${KEY}` }, timeoutMs = 300_000): Promise<Response> {
   return fetch(`${BASE}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", ...auth },
@@ -263,21 +263,31 @@ const WEATHER_TOOL = {
 }
 
 async function toolLoop(model: string): Promise<void> {
-  // Turn 1: expect a tool call.
-  const turn1 = await post("/v1/chat/completions", {
-    model,
-    stream: false,
-    messages: [{ role: "user", content: "What's the weather in Tokyo right now? Use the tool." }],
-    tools: [WEATHER_TOOL],
-    tool_choice: "auto",
-  })
-  expect(turn1.status === 200, `[${model}] tool turn1 HTTP 200`, `status=${turn1.status}`)
-  const t1 = (await turn1.json()) as {
-    choices?: Array<{ message?: { tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> }; finish_reason?: string }>
+  // Turn 1: expect a tool call. A reasoning model occasionally decides to
+  // answer a weather question directly instead of calling the tool (observed
+  // on space-bunny against the real edge); retry once before failing.
+  let calls: Array<{ id: string; function: { name: string; arguments: string } }> = []
+  let finishReason = ""
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const turn1 = await post("/v1/chat/completions", {
+      model,
+      stream: false,
+      messages: [{ role: "user", content: "What's the weather in Tokyo right now? Use the tool." }],
+      tools: [WEATHER_TOOL],
+      tool_choice: "auto",
+    })
+    expect(turn1.status === 200, `[${model}] tool turn1 HTTP 200`, `status=${turn1.status}`)
+    if (turn1.status !== 200) return
+    const t1 = (await turn1.json()) as {
+      choices?: Array<{ message?: { tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> }; finish_reason?: string }>
+    }
+    calls = t1.choices?.[0]?.message?.tool_calls ?? []
+    finishReason = t1.choices?.[0]?.finish_reason ?? ""
+    if (calls.length > 0) break
+    console.log(`      (attempt ${attempt}: model answered without calling the tool, retrying)`)
   }
-  const calls = t1.choices?.[0]?.message?.tool_calls ?? []
   expect(calls.length > 0 && calls[0]!.function.name === "get_weather", `[${model}] tool turn1 calls get_weather`, JSON.stringify(calls).slice(0, 120))
-  expect(t1.choices?.[0]?.finish_reason === "tool_calls", `[${model}] tool turn1 finish tool_calls`, String(t1.choices?.[0]?.finish_reason))
+  expect(finishReason === "tool_calls", `[${model}] tool turn1 finish tool_calls`, finishReason)
   if (calls.length === 0) return
 
   // Turn 2: replay the round-trip with the tool result.

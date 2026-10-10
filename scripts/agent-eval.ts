@@ -1,5 +1,6 @@
 // Real multi-turn agent eval against opencode zen through muse-proxy.
-// Usage: bun run eval
+// Usage: bun run eval                 (muse — the historical default)
+//        MODEL=step-5-preview-free bun run eval
 //
 // Task: research "recently good AI coding plans" — a realistic long task —
 // with reasoning_effort "xhigh" and a web_search tool the harness executes
@@ -78,13 +79,17 @@ function localSearch(query: string): string {
 }
 
 // A tiny OpenAI-compatible agent loop on top of the proxy.
+// MODEL=<id> evaluates another catalog model (default: unset -> muse, the
+// historical fallback). E.g. MODEL=step-5-preview-free bun run eval
 let searchCallCount = 0
+const EVAL_MODEL = process.env.MODEL
 
 async function callModel(messages: unknown[], stream: boolean) {
   const request = new Request("http://localhost/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${ENV.PROXY_API_KEY}` },
     body: JSON.stringify({
+      ...(EVAL_MODEL ? { model: EVAL_MODEL } : {}),
       stream,
       reasoning_effort: "xhigh",
       messages,

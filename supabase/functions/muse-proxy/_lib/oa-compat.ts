@@ -1,8 +1,9 @@
 // Shared oa-compat upstream execution branch for the three facades.
 //
 // When a request resolves to one of the new free models (mimo-v2.6-flash-free,
-// space-bunny-free), the handlers call handleOaCompatUpstream() instead of
-// posting to the Responses upstream. This module:
+// space-bunny-free, step-5-preview-free), the handlers call
+// handleOaCompatUpstream() instead of posting to the Responses upstream. This
+// module:
 //   1. lowers the already-normalized body into a chat completions request
 //      (chat-upstream.ts) and POSTs it with the same opencode header
 //      fingerprint (ids from identityForCall are already time-encoded),

@@ -13,7 +13,8 @@
 //                 stop_reason tool_use -> harness executes -> replay as
 //                 tool_use block + tool_result block -> final text block
 //
-// Per model (muse / mimo / space-bunny) and per facade the script asserts:
+// Per model (muse / mimo / space-bunny / step-5) and per facade the script
+// asserts:
 //   1. streaming is real (chunks arrive incrementally over time)
 //   2. the model issues a tool call for the CLIENT tool (not a builtin)
 //   3. the streamed tool arguments parse as JSON
@@ -32,7 +33,7 @@ import { handleMessagesRequest } from "../api/messages"
 const PORT = 8914
 const KEY = process.env.PROXY_API_KEY ?? "smoke-key"
 const BASE = `http://127.0.0.1:${PORT}`
-const MODELS = ["muse-spark-1.3-contributor-free", "mimo-v2.6-flash-free", "space-bunny-free"]
+const MODELS = ["muse-spark-1.3-contributor-free", "mimo-v2.6-flash-free", "space-bunny-free", "step-5-preview-free"]
 
 let passed = 0
 const failures: string[] = []
@@ -488,6 +489,27 @@ async function messagesToolLoop(model: string): Promise<void> {
 async function main(): Promise<void> {
   await startServer()
   console.log(`\n=== AGENT TOOL-LOOP SMOKE on real opencode zen (proxy at ${BASE}, sentinel ${SENTINEL}) ===`)
+  // A reasoning model occasionally skips the tool call and answers directly
+  // (observed on space-bunny against the real edge). Run each facade loop
+  // with one free retry: roll the counters back and try again before
+  // letting a model-side skip fail the suite.
+  async function runWithRetry(name: string, fn: () => Promise<void>): Promise<void> {
+    const passedBefore = passed
+    const failuresBefore = failures.length
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      if (attempt === 2) {
+        passed = passedBefore
+        failures.length = failuresBefore
+        console.log(`  [${name}] retrying once (model may have skipped the tool call)`)
+      }
+      try {
+        await fn()
+      } catch (error) {
+        bad(`[${name}] crashed`, String(error))
+      }
+      if (failures.length === failuresBefore) return
+    }
+  }
   for (const model of MODELS) {
     console.log(`\n--- ${model} ---`)
     const loops: Array<[string, () => Promise<void>]> = [
@@ -497,11 +519,7 @@ async function main(): Promise<void> {
     ]
     for (const [name, fn] of loops) {
       console.log(`  [${name}]`)
-      try {
-        await fn()
-      } catch (error) {
-        bad(`[${model}] ${name} crashed`, String(error))
-      }
+      await runWithRetry(name, fn)
     }
   }
 

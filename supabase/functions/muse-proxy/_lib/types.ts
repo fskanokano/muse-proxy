@@ -37,7 +37,8 @@ export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high"
 // Model catalog + routing
 // ---------------------------------------------------------------------------
 // The zen edge routes each model by FORMAT, and free models live on different
-// formats (probed 2026-09-24, opencode 1.18.32 + models.opencode.ai catalog):
+// formats (probed 2026-09-24 + 2026-10-10, opencode zen + models.opencode.ai
+// catalog + docs table):
 //   - muse-spark-1.3-contributor-free  -> "openai"  (/zen/v1/responses)
 //   - mimo-v2.6-flash-free             -> "oa-compat" (/zen/v1/chat/completions)
 //     (on /v1/responses the upstream 500s; the CLI ships it via
@@ -45,12 +46,15 @@ export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high"
 //   - space-bunny-free                 -> "oa-compat"
 //     (on /v1/responses it 401s "Model space-bunny-free is not supported
 //      for format openai")
+//   - step-5-preview-free              -> "oa-compat" (same route as
+//     space-bunny; confirmed 200 on the real edge 2026-10-10)
 // The muse paths (types.ts + lower*.ts + chat-upstream-less handlers) must
 // stay untouched; new models therefore route through a dedicated converter
 // (_lib/chat-upstream.ts) while muse keeps using the Responses upstream.
 export const MODEL_MUSE = "muse-spark-1.3-contributor-free"
 export const MODEL_MIMO = "mimo-v2.6-flash-free"
 export const MODEL_SPACE_BUNNY = "space-bunny-free"
+export const MODEL_STEP5 = "step-5-preview-free"
 
 export type UpstreamFormat = "responses" | "oa-compat"
 
@@ -78,6 +82,12 @@ export interface ModelInfo {
 //   - space-bunny: minimal/low/medium/high/xhigh/max all 200; "none" 400s
 //     (upstream invalid_request_error) even though the catalog omits it —
 //     the edge accepts MORE than the catalog lists, except none.
+//   - step-5-preview-free: minimal/low/medium/high/xhigh/max all 200
+//     (scripts/probe-step5-efforts.ts, 2026-10-10). "none" ALSO 400s — early
+//     in the same probe round it briefly returned 200, but the edge now
+//     answers 400 "Reasoning is mandatory for this endpoint and cannot be
+//     disabled" (re-probed twice, scripts/probe-step5-none.ts), so the
+//     clampEffortForModel none->minimal rule covers step-5 as well.
 const MUSE_INFO: ModelInfo = {
   id: MODEL_MUSE,
   name: "Muse Spark 1.3 Contributor Free (opencode zen)",
@@ -109,11 +119,27 @@ const SPACE_BUNNY_INFO: ModelInfo = {
   maxOutputTokens: 32_000,
   efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
 }
+// models.dev catalog (opencode/step-5-preview-free, 2026-10-10): context
+// 1,000,000 / output 65,536, reasoning + attachment + tool_call all true.
+// The shipped CLI clamps output to OUTPUT_TOKEN_MAX (32_000, see
+// packages/opencode/src/provider/transform.ts in the upstream repo), so the
+// proxy advertises the same effective cap as the other catalog entries.
+const STEP5_INFO: ModelInfo = {
+  id: MODEL_STEP5,
+  name: "Step 5 Preview Free",
+  upstream: "oa-compat",
+  description:
+    "Step 5 preview reasoning model (free tier, limited time) served via opencode zen with tool calling and multimodal input. Reasoning is mandatory; effort levels minimal–max, with none clamped to minimal.",
+  contextWindow: 1_000_000,
+  maxOutputTokens: 32_000,
+  efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+}
 
 export const MODELS: Record<string, ModelInfo> = {
   [MODEL_MUSE]: MUSE_INFO,
   [MODEL_MIMO]: MIMO_INFO,
   [MODEL_SPACE_BUNNY]: SPACE_BUNNY_INFO,
+  [MODEL_STEP5]: STEP5_INFO,
 }
 
 export const DEFAULT_MODEL_ID = MODEL_MUSE
@@ -123,8 +149,8 @@ export const DEFAULT_MODEL_ID = MODEL_MUSE
  *
  * Returns undefined when the model has no effort control (mimo: reasoning is
  * always on, the field is dropped) or the requested value is undefined.
- * space-bunny rejects "none" upstream (400), so it clamps to its lowest
- * accepted level instead of being forwarded. Muse keeps its historical
+ * space-bunny and step-5 reject "none" upstream (400), so it clamps to their
+ * lowest accepted level instead of being forwarded. Muse keeps its historical
  * whitelist untouched (REASONING_EFFORTS, which already contains none).
  */
 export function clampEffortForModel(model: ModelInfo, effort: string | undefined): string | undefined {
@@ -148,6 +174,7 @@ export function resolveModel(requested: unknown): ModelInfo {
   const normalized = requested.toLowerCase()
   if (normalized.startsWith("mimo")) return MIMO_INFO
   if (normalized.includes("space-bunny")) return SPACE_BUNNY_INFO
+  if (normalized.includes("step-5") || normalized.includes("step5")) return STEP5_INFO
   if (normalized.includes("muse")) return MUSE_INFO
   return MUSE_INFO
 }

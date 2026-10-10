@@ -17,6 +17,7 @@
     "smoke:responses": "bun run scripts/smoke-responses.ts",
     "smoke:messages": "bun run scripts/smoke-messages.ts",
     "smoke:newmodels": "bun run scripts/smoke-newmodels.ts",
+    "smoke:step5": "bun run scripts/smoke-step5.ts",
     "smoke:efforts": "bun run scripts/smoke-efforts.ts",
     "smoke:tools": "bun run scripts/smoke-agent-tools.ts",
     "smoke:openminis": "bun run scripts/probe-openminis-spacebunny.ts",
