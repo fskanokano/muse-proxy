@@ -180,6 +180,11 @@ export function resetRoundRobin(): void {
 /**
  * 构造单次请求的 fetchImpl: 首个上游调用时选择并钉死本次出口,
  * 同请求内后续调用复用; 调用方通过 getEgress() 记日志。
+ *
+ * 限流换出口重试: 免费层按 IP 限额, 429/503 时换一个出口重打一次
+ * (副出口多启用时才有意义; 主模式/单出口时只退避不等价重试)。
+ * 只在"上游尚未返回成功响应体"时重试: 成功响应 (含 SSE 流) 绝不重打,
+ * 错误响应体会被完整消费后丢弃再重试, 不存在半截流。
  */
 export function createRequestFetcher(
   mode: "primary" | "secondary",
@@ -187,10 +192,30 @@ export function createRequestFetcher(
   found: Discovery,
 ): { fetchImpl: typeof fetch; getEgress: () => PickedEgress | null } {
   let egress: PickedEgress | null = null;
+  const doFetch = (url: string, init: RequestInit, ip: string): Promise<Response> => {
+    if (ip === "default") return fetch(url, init);
+    return fetchWithEgress(ip)(url, init);
+  };
   const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
     if (!egress) egress = pickEgress(mode, enabledIps, found);
-    if (egress.ip === "default") return fetch(input as string, init);
-    return fetchWithEgress(egress.ip)(input, init);
+    const first = await doFetch(url, init, egress.ip);
+    if (first.status !== 429 && first.status !== 503) return first;
+    // 可换的出口: 同有效列表中排除当前; 无可换则直接返回原响应 (透传限流)。
+    const usable = found.secondaries.filter((s) => s.usable);
+    const want = enabledIps.filter(isIpv4);
+    const list = (want.length === 0 ? usable : usable.filter((s) => want.includes(s.ip))).filter(
+      (s) => s.ip !== egress!.ip,
+    );
+    if (list.length === 0) return first;
+    try {
+      await first.text().catch(() => "");
+    } catch {
+      /* 消费原错误体后丢弃 */
+    }
+    const next = list[(rrCounter = (rrCounter + 1) % list.length)]!;
+    egress = { ip: next.ip, name: next.name, public_ip: next.public_ip };
+    return doFetch(url, init, egress.ip);
   }) as typeof fetch;
   return { fetchImpl, getEgress: () => egress };
 }

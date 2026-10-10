@@ -62,12 +62,16 @@ async function writeBody(nodeReq: http.ClientRequest, body: BodyInit | null | un
 }
 
 // `${proto}:${egress ?? "default"}` -> keep-alive Agent (按出口隔离)。
+// 注意: timeout 必须为 0 (禁用 agent 的 socket 空闲掐断)。agent 的 timeout
+// 是"空闲超时": agent 轮次之间等模型推理 (十几秒到几分钟), 复用连接早超 8s,
+// 请求发到半死的连接上必得 socket timeout/hang up。建连超时由下方的自研
+// 10s 计时器单独守护 (复用/新建一视同仁), 空闲回收交上游与网关的 keepalive。
 const pools = new Map<string, http.Agent | https.Agent>();
 function agentFor(protocol: string, egressIp?: string): http.Agent | https.Agent {
   const key = `${protocol}:${egressIp ?? "default"}`;
   let a = pools.get(key);
   if (!a) {
-    const opts = { keepAlive: true, maxSockets: 128, keepAliveMsecs: 75000, timeout: 8000 };
+    const opts = { keepAlive: true, maxSockets: 128, keepAliveMsecs: 75000, timeout: 0 };
     a = protocol === "https:" ? new https.Agent(opts) : new http.Agent(opts);
     pools.set(key, a);
   }
@@ -159,10 +163,10 @@ export function nodeHttpFetch(input: string, init: RequestInit = {}, egressIp?: 
       return;
     }
 
-    // 仅建连阶段 10s 超时 (握手完成后取消; 长 SSE 由调用方守护, 此处不限总时长)。
+    // 建连 10s 超时: 新建连接等握手, 复用连接直接放行 (两者都必须清计时器,
+    // 否则复用连接的请求体会把计时器带到下一次复用, 误杀正常长请求)。
     nodeReq.on("socket", (sock: import("node:net").Socket) => {
       try {
-        if (!sock.connecting) return;
         const timer = setTimeout(() => {
           done(() => reject(new Error("upstream connect timeout")));
           try {
@@ -173,6 +177,10 @@ export function nodeHttpFetch(input: string, init: RequestInit = {}, egressIp?: 
         }, 10000);
         timer.unref?.();
         const clear = () => clearTimeout(timer);
+        if (!sock.connecting) {
+          clear();
+          return;
+        }
         sock.once("connect", clear);
         sock.once("secureConnect", clear);
       } catch {

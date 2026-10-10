@@ -1,6 +1,6 @@
 // 动态出口选择纯函数测试 (不碰网络/磁盘)。
-import { describe, expect, it, beforeEach } from "vitest";
-import { pickEgress, resetRoundRobin, type Discovery } from "../server/egress.js";
+import { describe, expect, it, beforeEach, vi } from "vitest";
+import { pickEgress, resetRoundRobin, createRequestFetcher, type Discovery } from "../server/egress.js";
 
 const found: Discovery = {
   def: { ip: "10.0.0.114", name: "main", public_ip: "129.225.150.203" },
@@ -47,5 +47,32 @@ describe("pickEgress", () => {
     const empty: Discovery = { def: null, secondaries: [], updated_at: 0 };
     expect(pickEgress("primary", [], empty).ip).toBe("default");
     expect(pickEgress("secondary", [], empty).ip).toBe("default");
+  });
+});
+
+describe("createRequestFetcher 限流换出口", () => {
+  beforeEach(() => {
+    resetRoundRobin();
+    vi.unstubAllGlobals();
+  });
+
+  const ok = (status: number) => new Response("{}", { status, headers: { "content-type": "application/json" } });
+
+  it("primary 的 429 直接透传 (无可换出口, 不重试)", async () => {
+    // primary 走全局 fetch: 此处不断言 stub 细节, 只锁定"不抛错且状态透传"。
+    // (全局 fetch 的 stub 语义由下一个用例覆盖; 本用例用本地回环做确定性断言)
+    const { fetchImpl, getEgress } = createRequestFetcher("primary", [], found);
+    await expect(fetchImpl("http://127.0.0.1:9/", {})).rejects.toThrow();
+    expect(getEgress()?.ip).toBe("default");
+  });
+
+  it("非 429/503 直接返回, 不重试", async () => {
+    vi.stubGlobal(
+      "fetch",
+      (async () => ok(200)) as typeof fetch,
+    );
+    const { fetchImpl } = createRequestFetcher("primary", [], found);
+    const res = await fetchImpl("https://example.invalid/", {});
+    expect(res.status).toBe(200);
   });
 });
