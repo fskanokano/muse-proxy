@@ -16,7 +16,7 @@
     // `api/**` re-exports those modules for the Vercel shell.
     "allowImportingTsExtensions": true
   },
-  "include": ["api/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "supabase/functions/muse-proxy/**/*.ts"],
+  "include": ["api/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "server/**/*.ts", "supabase/functions/muse-proxy/**/*.ts"],
   // index.ts and the Deno runner scripts are Deno entrypoints: they touch
   // `Deno.env` / `Deno.serve` / `Deno.Command`, which the Node-oriented project
   // tsconfig does not model. Typecheck them with `bun run typecheck:edge`

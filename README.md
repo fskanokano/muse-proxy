@@ -2,6 +2,10 @@
 
 一个把 opencode zen 的免费模型包装成标准 OpenAI Chat Completions / Responses 与 Anthropic Messages API 的无状态代理,零运行时依赖。**当前部署目标是单个 Supabase Edge Function(Deno 运行时)**;原 Vercel 部署保留为兼容外壳(同一套实现,只换宿主外壳)。
 
+> **egress 分支（本地部署）**：本分支在 supabase 分支基础上，脱离 Supabase/Vercel 云环境，
+> 可直接跑在本机（Node 常驻 + Docker），自带动态出口 IP（主出口 / 副出口轮询）与独立后台管理，
+> 并已挂载到 sse-gateway 的 `/mp` 路径下。详见 [本地部署](#本地部署egress-分支)。
+
 - **入站**:`POST /functions/v1/muse-proxy/chat/completions`(OpenAI `/v1/chat/completions` 兼容,支持流式 SSE 与聚合 JSON、工具调用、`reasoning_effort`)
 - **入站**:`POST /functions/v1/muse-proxy/responses`(OpenAI `/v1/responses` Responses API 规范,支持流式 SSE 与聚合 JSON、工具调用、加密思考回放,详见下文)
 - **入站**:`POST /functions/v1/muse-proxy/messages`(Anthropic `/v1/messages` Messages API 规范,支持流式 SSE 与聚合 JSON、工具调用、thinking 块,详见下文)
@@ -116,6 +120,62 @@ bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印
 `smoke:edge` 是迁到 edge runtime 后新增的套件:它不像其它 smoke 那样直接 import handler,而是按真实部署形态打 `/functions/v1/muse-proxy/*`(真 HTTP、真 SSE 帧、真客户端取消、真上游),因为网关路由、Deno 流语义、指纹头这些只有走真实链路才测得到。配合 `serve:fake` 时,它测的还是**打包后的部署产物**,不是源码树——这才能覆盖"只在打包阶段才暴露"的故障(动态 import、函数目录外的文件、不可打包的依赖)。
 
 `smoke:converse` 补的是另一层:上面那些断言的是**契约**(字段形状、终止帧、工具回合),它断言的是**对话本身**——每一轮必须依赖之前的轮次(记住名字/职业、逐字复述第一轮的指令),并把每一轮原文打印出来。它会当场暴露"能返回 JSON 但其实在胡言乱语"的情况。
+
+---
+
+## 本地部署（egress 分支）
+
+脱离 Supabase/Vercel，在本机（甲骨文 VPS，arm64）常驻运行，复用同一套门面实现
+（`supabase/functions/muse-proxy/router.ts` 的 `handleRequest`，上游 `fetch` 注入动态出口选择）：
+
+```
+client ─▶ sse-gateway:8443/mp/* ─剥/mp─▶ mp:18091 ─┬─ /v1/*      原全部接口
+                                                   ├─ /admin/*    后台管理 UI + API
+                                                   └─ 上游 opencode.ai（按出口模式绑定源 IP）
+```
+
+- **接口**：`POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages`、`GET /v1/models`
+ （与云版本逐字节同语义；鉴权仍是 `Authorization: Bearer $PROXY_API_KEY` / `x-api-key`）。
+- **SSE 长对话**：本机无云函数 300s 掐断——服务 `requestTimeout=0`，门面自带 15s 心跳，
+  客户端断开才 abort 上游；网关侧 `proxy_buffering off` + 600s 读写超时已覆盖 `/mp`。
+- **动态出口 IP**：后台可切 `primary`（默认路由）/`secondary`（副出口轮询），副 IP 自动发现
+  （名字即宿主机策略路由表名）+ 按源探测公网 IP，默认全选、可动态勾选（热生效，无需重启）。
+- **日志**：每次请求记方法/路径/状态/耗时/出口（公网 + 表名）/上游状态，后台分页搜索查看。
+- **后台管理**（风格对标 sse-gateway 后台）：`/admin/`（HashRouter），经网关访问时登录页另填网关边缘钥，
+  后台 token 改走 `x-admin-key` 头（`Authorization` 让给网关）。
+
+### 启停
+
+```bash
+cp .env.example .env   # 填 PROXY_API_KEY / MP_ADMIN_PASSWORD
+docker compose up -d --build   # host 网络，0.0.0.0:18091（公网面靠 ufw 挡）
+MP_BASE=http://127.0.0.1:18091 MP_TEST_KEY=$PROXY_API_KEY MP_ADMIN_PASSWORD=$MP_ADMIN_PASSWORD bun run scripts/mp-smoke.ts
+```
+
+防火墙（容器网段必须能连宿主机 18091，公网不放行）：
+`sudo ufw allow from 10.0.0.0/8 to any port 18091`
+
+### 网关挂载（sse-gateway `/mp`）
+
+网关加节点 `mp-local`：`simple/http/host=10.0.15.1/port=18091/route_path=/mp`
+（网关剥掉 `/mp` 前缀，服务看到的仍是 `/v1/*` 与 `/admin/*` 原路径），
+并把 `$PROXY_API_KEY` 同值加入网关边缘 key 名单（双层鉴权：网关认边缘钥，mp 认自己的 key；
+后台 token 经网关时改走 `x-admin-key`）。挂载后：`https://<GW_DOMAIN>:8443/mp/v1/models`、
+`https://<GW_DOMAIN>:8443/mp/admin/`。
+
+### 目录（本分支新增）
+
+```
+server/           # 本地服务：main.ts（路由/静态/管理API） + config/egress/logger/auth/bridge/http-fetch.ts
+admin-web/        # 后台 UI（Vite+React+Tailwind，base /admin/，HashRouter，API 相对路径）
+Dockerfile        # 多段构建（admin-web 静态 + Node 服务，iproute2 供出口发现）
+docker-compose.yml# host 网络单服务
+test/egress.test.ts # 出口选择纯函数单测
+scripts/mp-smoke.ts # 本地冒烟（健康/模型表/后台/真上游 SSE）
+```
+
+注意：`server/http-fetch.ts` 是自研 fetch 桥——实测 undici `Agent({connect:{localAddress}})`
+绑定不生效，改用 node:http per-request `localAddress`（keep-alive 池按出口隔离），不要换回去。
 
 ---
 

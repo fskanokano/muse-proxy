@@ -21,7 +21,12 @@
     "smoke:efforts": "bun run scripts/smoke-efforts.ts",
     "smoke:tools": "bun run scripts/smoke-agent-tools.ts",
     "smoke:openminis": "bun run scripts/probe-openminis-spacebunny.ts",
-    "eval": "bun run scripts/agent-eval.ts"
+    "eval": "bun run scripts/agent-eval.ts",
+    "mp:serve": "tsx server/main.ts",
+    "mp:smoke": "bun run scripts/mp-smoke.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.19.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

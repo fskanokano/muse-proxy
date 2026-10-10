@@ -1,0 +1,38 @@
+# ============================================================
+# muse-proxy 本地部署 (egress 分支): 脱离 Supabase/Vercel 云环境,
+# 本机常驻 + 动态出口 IP + 独立后台管理。
+#
+# 网络: host 模式 (出口绑定副 IP 必须在宿主机网络命名空间)。
+# 监听 0.0.0.0:${MP_PORT:-18091} (bridge 网段的网关要能连上环回之外的本机地址;
+# 公网面靠 ufw 挡: 仅放行 10.0.0.0/8, 见 README)。
+# 网关挂载: sse-gateway 加节点 route_path=/mp -> host.docker.internal:18091
+# (网关剥掉 /mp 前缀, 服务看到的仍是 /v1/* 与 /admin/* 原路径)。
+# ============================================================
+
+services:
+  mp:
+    build: .
+    container_name: muse-proxy-local
+    network_mode: host
+    environment:
+      - MP_PORT=${MP_PORT:-18091}
+      - MP_BIND=0.0.0.0
+      - PROXY_API_KEY=${PROXY_API_KEY:-}
+      - MP_ADMIN_PASSWORD=${MP_ADMIN_PASSWORD:-}
+      - MP_DATA_DIR=/data
+    volumes:
+      - ./data:/data
+      # 宿主机策略路由表名映射 (副出口名字即表名, 如 egress91)
+      - /etc/iproute2/rt_tables:/etc/iproute2/rt_tables:ro
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${MP_PORT:-18091}/mp-healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
