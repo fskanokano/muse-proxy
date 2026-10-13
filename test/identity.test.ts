@@ -10,15 +10,37 @@ describe("identityForCall", () => {
     expect(requestId).toHaveLength(4 + 26)
   })
 
-  it("encodes the timestamp into the low 48 bits, like Identifier.create", () => {
+  it("encodes the complemented timestamp into the low 48 bits, like Identifier.create(true)", () => {
     const at = 1_758_000_000_000
     const { requestId } = identityForCall("a", at)
-    const hex = requestId.slice(4, 16)
-    const encoded = BigInt("0x" + hex)
-    // opencode keeps (ms<<12|counter) in 48 bits; the top 12 bits of the
-    // current epoch are shifted out, so recover with the same modulus.
-    const recovered = Number(encoded / 0x1000n) + Math.floor(1757652480_000 / 0x100000) * 0x100000
-    expect(recovered % 0x100000).toBe(at % 0x100000)
+    const encoded = BigInt("0x" + requestId.slice(4, 16))
+    // SessionID.create() uses the descending variant, so the stored 48 bits are
+    // the complement of (ms<<12 | counter). Undo both to recover the ms.
+    const counter = ~encoded & 0xfffn
+    const recoveredMs = ((~encoded & ((1n << 48n) - 1n)) - counter) / 0x1000n
+    // opencode keeps (ms<<12|counter) in 48 bits; at the current epoch the top
+    // bits are shifted out, so only ms % 2^36 survives.
+    expect(recoveredMs).toBe(BigInt(at) % (1n << 36n))
+  })
+
+  it("keeps every id's low 12 bits inside the free-tier gate window (>= 0xFC0)", () => {
+    // Probed 2026-10-13 by replaying a captured real CLI request: the zen gate
+    // re-derives the descending per-millisecond counter from the id and rejects
+    // the request with 403 FreeTierError unless the low 12 bits are >= 0xFC0
+    // (counter 63 passes, 64 fails; the timestamp prefix is irrelevant). Sweep
+    // seeds/timestamps so a regression in the counter derivation cannot slip
+    // through on a single lucky id.
+    for (let i = 0; i < 300; i++) {
+      const at = 1_758_000_000_000 + i * 7919
+      const { sessionId, requestId } = identityForCall(`seed-${i}`, at)
+      const ids = [sessionId, requestId, partId(`seed-${i}`, "user", i % 4, at)]
+      for (const id of ids) {
+        const low12 = Number(BigInt("0x" + id.slice(4, 16)) & 0xfffn)
+        expect(low12).toBeGreaterThanOrEqual(0xfc0)
+        // ... which is exactly a small per-millisecond counter.
+        expect(~BigInt("0x" + id.slice(4, 16)) & 0xfffn).toBeLessThanOrEqual(0x3fn)
+      }
+    }
   })
 
   it("is deterministic per call id and varies across call ids", () => {

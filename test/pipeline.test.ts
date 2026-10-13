@@ -149,16 +149,26 @@ describe("handleChatRequest", () => {
     mockFetch(sseResponse([{ type: "response.completed", response: {} }]))
     await handleChatRequest(postRequest({ messages: [{ role: "user", content: "hi" }] }), ENV)
     const headers = calls[0]!.init!.headers as Record<string, string>
-    // Mirrors the shipped 1.18.31 CLI wire format (captured 2026-09-18):
-    // ai-sdk/provider-utils + runtime/bun suffixes, NOT the in-repo
-    // request.ts construction.
-    expect(headers["user-agent"]).toBe("opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14")
+    // Mirrors the shipped 2.0.28 CLI wire format (captured 2026-10-13):
+    // `opencode/<channel>/<version>/<client>` — NOT the legacy v1
+    // ai-sdk/provider-utils UA the 1.18.x binary emitted.
+    expect(headers["user-agent"]).toBe("opencode/latest/2.0.28/cli")
     expect(headers["x-opencode-client"]).toBe("cli")
     expect(headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
     expect(headers["x-opencode-request"]).toMatch(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
+    // The shipped client stamps the same session id under four names.
+    expect(headers["x-opencode-session-id"]).toBe(headers["x-opencode-session"])
+    expect(headers["x-session-affinity"]).toBe(headers["x-opencode-session"])
+    expect(headers["x-session-id"]).toBe(headers["x-opencode-session"])
     expect(headers["x-opencode-project"]).toBe("global")
     // Session and message ids differ per upstream call.
     expect(headers["x-opencode-session"]).not.toBe(headers["x-opencode-request"])
+    // Gate invariant (probed 2026-10-13): the gate re-derives the descending
+    // per-millisecond counter from the session id's low 12 bits and 403s unless
+    // it is >= 0xFC0. An ascending id or a large counter reads as non-opencode.
+    const session = headers["x-opencode-session"] as string
+    const low12 = Number(BigInt(`0x${session.slice(4, 16)}`) & 0xfffn)
+    expect(low12).toBeGreaterThanOrEqual(0xfc0)
   })
 
   it("appends client tools after the builtin set and stubs builtin descriptions", async () => {

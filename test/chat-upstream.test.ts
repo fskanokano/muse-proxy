@@ -163,6 +163,15 @@ describe("effort clamping per model", () => {
     expect(none.reasoning_effort).toBe("minimal")
   })
 
+  it("step-5: minimal..max forwarded verbatim, none clamped to minimal (reasoning mandatory)", () => {
+    for (const level of ["minimal", "low", "medium", "high", "xhigh", "max"]) {
+      const request = lowerChatUpstream({ model: MODELS["step-5-preview-free"]!, input: [], tools: [], effort: level })
+      expect(request.reasoning_effort).toBe(level)
+    }
+    const none = lowerChatUpstream({ model: MODELS["step-5-preview-free"]!, input: [], tools: [], effort: "none" })
+    expect(none.reasoning_effort).toBe("minimal")
+  })
+
   it("clampEffortForModel: unknown values dropped, muse whitelist untouched", () => {
     const muse = resolveModel(MODEL_MUSE)
     expect(muse.efforts).toContain("none")
@@ -171,16 +180,31 @@ describe("effort clamping per model", () => {
   })
 })
 
+describe("resolveModel routing", () => {
+  it("routes aliases onto the right catalog entry without touching muse fallback", () => {
+    expect(resolveModel("step-5-preview-free").id).toBe("step-5-preview-free")
+    expect(resolveModel("Step-5-Preview").id).toBe("step-5-preview-free")
+    expect(resolveModel("step5").id).toBe("step-5-preview-free")
+    expect(resolveModel("mimo-v2.6-flash").id).toBe("mimo-v2.6-flash-free")
+    expect(resolveModel("space-bunny").id).toBe("space-bunny-free")
+    expect(resolveModel("muse").id).toBe("muse-spark-1.3-contributor-free")
+    expect(resolveModel("gpt-5.5").id).toBe("muse-spark-1.3-contributor-free")
+    expect(resolveModel(undefined).id).toBe("muse-spark-1.3-contributor-free")
+    expect(resolveModel("").id).toBe("muse-spark-1.3-contributor-free")
+  })
+})
+
 describe("/v1/models catalog", () => {
   const created = 1_758_000_000
   const list = modelsList(created)
 
-  it("lists all three free models with reasoning metadata", () => {
+  it("lists all four free models with reasoning metadata", () => {
     const ids = list.data.map((m: { id: string }) => m.id)
     expect(ids).toEqual([
       "muse-spark-1.3-contributor-free",
       "mimo-v2.6-flash-free",
       "space-bunny-free",
+      "step-5-preview-free",
     ])
     for (const entry of list.data) {
       expect(entry.object).toBe("model")
@@ -197,6 +221,8 @@ describe("/v1/models catalog", () => {
     expect(byId.get("mimo-v2.6-flash-free")!.reasoning).toBe(true)
     expect(byId.get("space-bunny-free")!.reasoning_levels).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"])
     expect(byId.get("muse-spark-1.3-contributor-free")!.reasoning_levels).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+    expect(byId.get("step-5-preview-free")!.reasoning_levels).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"])
+    expect(byId.get("step-5-preview-free")!.reasoning).toBe(true)
   })
 })
 
