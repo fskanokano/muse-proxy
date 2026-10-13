@@ -144,6 +144,7 @@ describe("edge function dispatch", () => {
       "muse-spark-1.3-contributor-free",
       "mimo-v2.6-flash-free",
       "space-bunny-free",
+      "step-5-preview-free",
     ])
     expect(calls).toHaveLength(0)
   })
