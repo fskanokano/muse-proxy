@@ -1,11 +1,19 @@
 // opencode client identifier synthesis.
 //
 // opencode stamps every zen request with opaque, time-ordered client IDs
-// (packages/opencode/src/id/id.ts `Identifier.create`): a `<prefix>_` +
-// 6-byte big-endian (timestamp<<12 | counter) hex time component + base62
-// suffix, 26 chars total. The zen edge gates the free tier on this header
-// fingerprint, so the proxy mirrors the shape exactly instead of sending
-// bare UUIDs, which read as non-opencode traffic.
+// (`packages/schema/src/identifier.ts` `Identifier.create`): a `<prefix>_` +
+// 6-byte big-endian 48-bit time component + 14 base62 chars, 26 chars total.
+// Session ids come from `SessionID.create()` → `descending()`, i.e. the time
+// component is the BITWISE COMPLEMENT of `(ms<<12 | counter)` (`create(true)`).
+//
+// WHY THE COMPLEMENT AND THE SMALL COUNTER BOTH MATTER: since 2026-10-13 the
+// zen free-tier gate re-derives the per-millisecond counter from the session
+// id's low 12 bits and rejects the request with 403 FreeTierError unless it is
+// <= 63 (probed by replaying a captured real request and scanning the field:
+// every value >= 0xFC0 passes, 0xFBF and below fail, for any timestamp — see
+// README → troubleshooting round 3). An ascending id, or a descending id whose
+// counter is not small, therefore reads as non-opencode traffic even though the
+// string shape is right.
 //
 // Deterministic per (callId, role) so an upstream retry of the same
 // completion keeps the same identity.
@@ -17,6 +25,13 @@ const PREFIXES = {
 } as const
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+const MASK_48 = BigInt("0xffffffffffff")
+// The gate accepts a low-12-bit field of 0xFC0..0xFFF, i.e. a counter of 1..63
+// (counter 63 → 0xFC0 passes, 64 → 0xFBF is rejected). A real client mints only
+// a handful of ids per millisecond, so staying in this window is faithful *and*
+// required.
+const MAX_COUNTER = 63
 
 // Deterministic 26-char base62 suffix from an ASCII seed (FNV-1a + xorshift).
 function suffixFrom(seed: string): string {
@@ -45,10 +60,12 @@ function suffixFrom(seed: string): string {
 // Identifier.create keeps the low 48 bits of (ms<<12|counter): at current
 // epoch the top 12 bits are already shifted out, exactly as in opencode.
 function opencodeId(prefix: keyof typeof PREFIXES, seed: string, atMs = Date.now()): string {
-  const counter = atMs % 0x1000
-  const time = (BigInt(atMs) * BigInt(0x1000) + BigInt(counter)) & BigInt("0xffffffffffff")
+  // Descending variant: `value = ~(ms<<12 | counter)`, masked to 48 bits — the
+  // byte extraction below is then identical to `Identifier.create(true)`.
+  const counter = BigInt(1 + (hash32(seed) % MAX_COUNTER))
+  const value = ~(BigInt(atMs) * BigInt(0x1000) + counter) & MASK_48
   let hex = ""
-  let remaining = time
+  let remaining = value
   for (let i = 0; i < 6; i++) {
     const byte = Number(remaining & BigInt(0xff))
     hex = byte.toString(16).padStart(2, "0") + hex

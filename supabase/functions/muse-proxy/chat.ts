@@ -255,10 +255,11 @@ export async function handleChatRequest(
 
   let upstream: Response
   try {
-    // Full opencode client header fingerprint (captured from a real 1.18.31
-    // CLI request): ai-sdk/runtime-suffixed UA, client flag, opencode-shaped
-    // session/request ids, and project:"global". The zen free tier rejects
-    // any deviation with 403 FreeTierError.
+    // Full opencode client header fingerprint (captured from a real 2.0.28 CLI
+    // request): version-scoped UA, client flag, opencode-shaped session ids,
+    // project key. The zen free tier rejects any deviation with 403
+    // FreeTierError. The current client stamps the same session id under four
+    // names (session / session-id / affinity / x-session-id) — mirrored here.
     upstream = await fetchImpl(UPSTREAM_URL, {
       method: "POST",
       headers: {
@@ -268,9 +269,13 @@ export async function handleChatRequest(
         // Free tier is UA-gated; without a CLI-faithful UA upstream rejects.
         "user-agent": UPSTREAM_USER_AGENT,
         // Required by the responses endpoint (MissingSessionID otherwise).
-        // Stateless proxy: opencode-shaped ses_/msg_ ids per upstream call;
-        // mirrors opencode's `x-opencode-session: sessionID` (request.ts).
+        // Stateless proxy: opencode-shaped ses_/msg_ ids per upstream call,
+        // mirroring the shipped client (see _lib/identity.ts for the exact
+        // shape the gate now enforces).
         "x-opencode-session": identity.sessionId,
+        "x-opencode-session-id": identity.sessionId,
+        "x-session-affinity": identity.sessionId,
+        "x-session-id": identity.sessionId,
         "x-opencode-request": identity.requestId,
         "x-opencode-client": OPENCODE_CLIENT,
         "x-opencode-project": OPENCODE_PROJECT_ID,

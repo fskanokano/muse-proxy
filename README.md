@@ -108,7 +108,7 @@ bun run serve:functions # 官方方式,需要 Docker
 ```bash
 bun run typecheck       # tsc:api/ test/ scripts/ + supabase/functions/muse-proxy
 bun run typecheck:edge  # deno check:index.ts / router.ts / serve-edge.ts
-bun run test            # 180 个单元/集成测试(mock 上游,无需联网)
+bun run test            # 181 个单元/集成测试(mock 上游,无需联网)
 bun run smoke:edge      # 真实上游+真实 HTTP:平台层 34 检查 + 3 模型 × 3 门面 × 6 项(需先 serve:edge 或 serve:fake)
 bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印原文(同上需先启动服务)
 ```
@@ -159,7 +159,7 @@ bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印
 
 ```bash
 bun install            # 或 npm install
-bun run test           # 180 个单元/集成/沙箱端到端测试(mock 上游,无需联网)
+bun run test           # 181 个单元/集成/沙箱端到端测试(mock 上游,无需联网)
 bun run serve:edge     # 无 Docker 运行 Edge Function(Deno,$PORT,默认 8788)
 bun run smoke:edge     # Edge Function 真实上游 HTTP 套件(需先 serve:edge)
 bun run deploy:functions # supabase functions deploy muse-proxy
@@ -232,7 +232,7 @@ curl -X POST https://your-proxy/v1/messages \
 
 # 排查手册:上游更新导致 "OpenCode's free tier can only be used from within OpenCode"
 
-> 免费层不是按账号鉴权的,而是**按客户端指纹鉴权**。opencode zen 一旦收紧指纹校验,代理立刻失效——这不是 bug,是设计如此。本文记录 2026-09 两轮完整的排查-定位-修复过程(第一轮:头指纹;第二轮:请求体工具集指纹),上游下次再变时照此办理。
+> 免费层不是按账号鉴权的,而是**按客户端指纹鉴权**。opencode zen 一旦收紧指纹校验,代理立刻失效——这不是 bug,是设计如此。本文记录三轮完整的排查-定位-修复过程(第一轮:头指纹;第二轮:请求体工具集指纹;第三轮:**session ID 编码指纹**),上游下次再变时照此办理。
 
 ## 1. 报错长什么样
 
@@ -368,22 +368,74 @@ bun run smoke  # 真实上游双路径 200
 bun run eval   # 16/16:多轮、真流式、xhigh 思考、web_search 循环、记忆探针
 ```
 
-## 5. 下次上游再更新时的排查清单(Cheat Sheet)
+## 5. 第三轮事件(2026-10-13):session ID 的编码指纹
+
+代理再次全挂,报错与第二轮同款(**403** + `FreeTierError`),但这次元凶既不是请求头也不是工具集,而是 **session ID 的编码方式**:同一个字符串形状,**ascending 与 descending 的命运相反**。
+
+### 5.1 上游变化
+
+- **客户端换代**:开源仓库 `github.com/anomalyco/opencode` 已是 **v2**(monorepo 版本 2.0.28,npm 包 **`@opencode/cli`**);旧的 `opencode-ai`(1.19.0)是 v1 线。
+- **源码搬家**:请求构造 `packages/opencode/src/session/llm/request.ts` → **`packages/core/src/session/model-request.ts`**;ID 生成 `packages/opencode/src/id/id.ts` → **`packages/schema/src/identifier.ts`**。
+- **端点迁移**:models.dev 目录里 opencode provider 的 API 基址从 `https://opencode.ai/zen/v1` 变成 **`https://opencode.ai/inference/v1`**。两条路径目前都能过门槛,不是本次元凶,但值得留意。
+- **UA 形态**:线上抓包为 `opencode/latest/2.0.28/cli`(即 `opencode/<channel>/<version>/<client>`);v1 的 `ai-sdk/provider-utils/... runtime/bun/...` 后缀在 v2 里消失。新旧 UA 都仍被接受。
+- **新增 session 头**:当前客户端把同一个 session id 同时挂在 `x-opencode-session` / `x-opencode-session-id` / `x-session-affinity` / `x-session-id` 四个名下,并新增 `traceparent` / `b3` 追踪头;`x-opencode-request` 已不再发送。实测这些头**都不是**门槛(`traceparent`/`b3`/`x-opencode-project: global` 全删仍 200),但为保持"与真实客户端不可区分",代理照发前四个。
+- **内置工具改名**:`bash → shell`、`task → subagent`、`apply_patch → patch`,`todowrite` 被移除,新增 `question` / `execute`(Code Mode)。抓包里直连工具的正式形态是 12 个:`edit glob grep question read shell skill subagent webfetch websearch write execute`。
+
+### 5.2 定位过程(二分法探针)
+
+真实 CLI(v2.0.28)直连上游是**通的**,所以问题一定在"代理哪里不像"。以抓包为基准逐项消融:
+
+1. **精确重放抓包** → 200,基准有效。
+2. **UA / `x-opencode-project` / `traceparent` / `b3` / 逐个 session 头** 单删 → **全部 200**。头指纹这次不是元凶(四个 session 头全删才 403)。
+3. **tools 全删 → 403;只留 1–5 个 → 403;留 ≥ 6 个 → 200**。工具**数量**门槛降到 **6**(第二轮是 2),名字集不再严格(`execute` 换成 `patch` 也能过),**描述与参数随便桩化都行**。
+4. **session id 换成随机 base62 → 403;换成 ascending 形状 → 403**。**元凶锁定在 session id 的编码**。
+5. 固定前缀只扫低 12 位:`0xFC0` 起全过,`0xFBF` 及以下全拒;再扫 counter:`1…63` 过,`64…4095` 拒;把时间戳换成 1975 年 / 2000 年 / 未来,**只要低 12 位达标照样过**。
+
+结论:**门槛校验的是 session id 的「descending 编码 + 每毫秒计数器 ≤ 63」**,即 `Identifier.create(true)` 的 48 位时间分量的低 12 位必须 ≥ `0xFC0`;前缀/时间戳完全不参与校验。而代理原来生成的是 **ascending**(未取反)且 counter 取 `atMs % 0x1000`(均匀落在 0…4095),约 98% 的概率落进拒绝区——所以**必挂**。
+
+### 5.3 修复(已实施)
+
+- **`supabase/functions/muse-proxy/_lib/identity.ts`**:改用 `Identifier.create(true)` 的 descending 编码(`value = ~(ms<<12 | counter) & 0xffffffffffff`),并把 counter 从 `atMs % 0x1000` 换成由 seed 派生的 `1 + hash32(seed) % 63`(恒定落在 1…63)。"同一 (callId, role) 确定性生成"保持不变。
+- **`supabase/functions/muse-proxy/_lib/types.ts`**:UA 更新为线上真实形态 `opencode/${channel}/${version}/${client}`,版本跟随当前 `@opencode/cli`(2.0.28,channel `latest`)。
+- **四个门面(`chat.ts` / `responses.ts` / `messages.ts` / `_lib/oa-compat.ts`)**:补齐 `x-opencode-session-id` / `x-session-affinity` / `x-session-id`,与当前客户端一致。
+- **测试**:`test/identity.test.ts` 新增"低 12 位必须 ≥ 0xFC0"的不变量扫描(300 组 seed/时间戳),并把时间戳编码断言改成按 descending 解码;`test/pipeline.test.ts` / `test/router.test.ts` 的 UA 断言同步。
+
+### 5.4 验证
+
+```bash
+bun run test            # 181/181
+bun run typecheck       # tsc --noEmit 通过
+bun run smoke           # 真实上游 200(流式 + 非流式)
+bun run smoke:newmodels # 114/114:3 模型 × 3 门面 + 工具回合 + 记忆 + 长流式
+```
+
+### 5.5 怎么抓 v2 客户端的真实请求
+
+`scripts/capture-server.ts` 的玩法(把 `OPENCODE_BASE_URL` 指向本地)只对 v1 有效:v2 的 provider 基址来自 models.dev + 远程配置,在 `opencode.json` 里覆盖 `provider.opencode.settings.baseURL` **不会生效**(会依旧直连线上)。可用本地 MITM:
+
+1. 自签一个 CA,并签一张 `opencode.ai`(+`*.opencode.ai`)的服务器证书;
+2. 起一个 HTTP 代理:收到 `CONNECT` 后做 TLS 终止(用上一步的证书),把请求头+体记录下来,再转发给真实上游;
+3. 用 `HTTPS_PROXY=http://127.0.0.1:<port>` + `NODE_EXTRA_CA_CERTS=<ca.crt>` 跑 `opencode run -m opencode/muse-spark-1.3-contributor-free "say PONG"`(**`NO_PROXY=127.0.0.1`**,否则 CLI 自己的本地 server 流量也会被代理掉);
+4. 取记录里的 `POST /inference/v1/responses` 作为消融基准。
+
+抓包是**唯一权威**;源码只用来解释抓包。
+
+## 6. 下次上游再更新时的排查清单(Cheat Sheet)
 
 按序检查,命中即修:
 
 1. **报错是否变了文案/状态码?** 收集当前 4xx 响应体,和 `supabase/functions/muse-proxy/_lib/errors.ts` 的映射对照。429→403 或新增 `FreeTierError` 字样 = 门槛升级信号。
-2. **重抓基准。** 用 `scripts/capture-server.ts` 抓一份**当前版本**真实 CLI 的完整请求(头+体),精确重放确认 200。这份抓包是后续所有二分的基础。
-3. **版本号过期?** `npm view opencode-ai version`,更新 `supabase/functions/muse-proxy/_lib/types.ts` 的 `OPENCODE_VERSION`。上游大版本发布后这几乎总是第一步。
+2. **重抓基准(唯一权威)。** 用**当前版本真实 CLI** 抓一份完整请求(头+体)并精确重放确认 200。v1 客户端可用 `scripts/capture-server.ts`;v2 客户端的 provider 基址来自 models.dev/远程配置,配置覆盖不生效,**必须本地 MITM**(见第 5.5 节)。
+3. **版本号过期?** 先确认跟的是哪条线:`@opencode/cli`(v2,仓库 `anomalyco/opencode`,线上 UA `opencode/latest/<version>/cli`)还是 `opencode-ai`(v1)。`npm view @opencode/cli version`,更新 `supabase/functions/muse-proxy/_lib/types.ts` 的 `OPENCODE_VERSION` / `OPENCODE_CHANNEL`。上游大版本发布后这几乎总是第一步。
 4. **头指纹变了?** 对比抓包头与 `supabase/functions/muse-proxy/chat.ts` 发的头集合(新增头?删除头?UA 格式?)。注意:**仓库源码的 UA 构造可能与线上二进制不一致**,以抓包为准。
-5. **ID 形状变了?** 对照 `packages/opencode/src/id/id.ts` 的 `Identifier.create`(前缀、长度、时间分量布局),必要时更新 `supabase/functions/muse-proxy/_lib/identity.ts`。探针测 25/26/27 字符与 UUID 即可确认。
+5. **ID 形状变了?** 两步走:(a) 对照 `packages/schema/src/identifier.ts` 的 `Identifier.create`(前缀、26 字符、**descending 取反**)更新 `supabase/functions/muse-proxy/_lib/identity.ts`;(b) **逐位扫描**——固定前缀只扫低 12 位(或 counter),找出上游接受的区间。2026-10-13 的门槛就是"低 12 位 ≥ 0xFC0":形状正确但 ascending 一样被拒,别只测长度和前缀。
 6. **请求体指纹变了?(2026-09-18 新增此类)** 用抓包体做消融:删 tools / 换 tools / 加 `reasoning` / 改 `prompt_cache_key` / 首条 role 换 `system`,一次只改一项,找到被校验的新字段。内置工具清单存于 `supabase/functions/muse-proxy/_lib/tools.ts`,若 CLI 工具集变化则重抓刷新该数组。
 7. **上游 API 支持面变了?** 例如 `tool_choice` 现在只支持 `"auto"`;留意 400 响应里的 `param` 字段直接指出被拒参数。
 8. **报错文案 grep 不到?** 校验在闭源边缘服务里,别浪费时间翻 CLI 逻辑,专注完整模仿客户端指纹(头 + 体)。
 9. **免费模型 ID 变了?** 留意 zen 模型目录与 `MODEL_ID`(`muse-spark-1.3-contributor-free`)。
 10. 修复后按顺序跑 `bun run test` → `bun run smoke` → `bun run eval`,全绿再收工。
 
-## 6. 行为与合规注意事项
+## 7. 行为与合规注意事项
 
 - 指纹模仿的是**无凭据的免费匿名层**,按 IP 限额;请勿用于绕过付费或大规模滥用,上游随时可能再次收紧。
 - 内置工具只以**桩描述**发送(名字是真的,描述声明不可用):模型不会自发调用客户端无法执行的 CLI 工具;代理的兼容性目标是让 OpenAI 客户端自己的工具调用正常工作。

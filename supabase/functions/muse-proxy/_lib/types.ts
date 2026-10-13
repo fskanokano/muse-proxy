@@ -17,14 +17,18 @@ export const UPSTREAM_API_KEY = "public"
 // lives in the closed-source edge; the open-source repo only tells us what
 // a real client sends).
 //
-// UA mirrors what the shipped opencode CLI emits on the wire (captured
-// 2026-09-18): ai-sdk/provider-utils + runtime/bun suffixes appended to
-// `opencode/<version>`. Note the in-repo request.ts constructs a different
-// (shorter) UA — the shipped binary is what passes the gate, so keep the
-// captured form. Re-verify on every upstream version bump.
-export const OPENCODE_VERSION = "1.18.31"
+// UA mirrors what the shipped opencode CLI emits on the wire. The v2 client
+// (`@opencode/cli`, repo github.com/anomalyco/opencode — the repo the README
+// clones) builds it as `opencode/<channel>/<version>/<name>`, captured
+// 2026-10-13 as `opencode/latest/2.0.28/cli`. The legacy v1 `opencode-ai`
+// binary emitted `opencode/<version> ai-sdk/provider-utils/<v> runtime/bun/<v>`
+// instead; both pass the gate today, but the proxy mirrors the current
+// client. Re-verify on every upstream version bump (`npm view @opencode/cli
+// version`; the channel is "latest" for any non-snapshot release).
+export const OPENCODE_VERSION = "2.0.28"
+export const OPENCODE_CHANNEL = "latest"
 export const OPENCODE_CLIENT = "cli"
-export const UPSTREAM_USER_AGENT = `opencode/${OPENCODE_VERSION} ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14`
+export const UPSTREAM_USER_AGENT = `opencode/${OPENCODE_CHANNEL}/${OPENCODE_VERSION}/${OPENCODE_CLIENT}`
 // The CLI sends x-opencode-project: "global" (project id of a global home
 // session); the edge accepts any value, but match the real client.
 export const OPENCODE_PROJECT_ID = "global"
