@@ -1,5 +1,13 @@
 // 动态出口选择纯函数测试 (不碰网络/磁盘)。
 import { describe, expect, it, beforeEach, vi } from "vitest";
+import { naturalNameCmp } from "../server/egress.js";
+
+describe("naturalNameCmp", () => {
+  it("egress1 < egress2 < ... < egress10（纯字符串会把10排到2前面）", () => {
+    const names = ["egress10", "egress2", "egress1", "egress9", "main", "egress3"];
+    expect(names.slice().sort(naturalNameCmp)).toEqual(["egress1", "egress2", "egress3", "egress9", "egress10", "main"]);
+  });
+});
 import { pickEgress, resetRoundRobin, createRequestFetcher, type Discovery } from "../server/egress.js";
 
 const found: Discovery = {
