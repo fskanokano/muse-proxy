@@ -144,6 +144,7 @@ describe("edge function dispatch", () => {
       "muse-spark-1.3-contributor-free",
       "mimo-v2.6-flash-free",
       "space-bunny-free",
+      "step-5-preview-free",
     ])
     expect(calls).toHaveLength(0)
   })
@@ -188,7 +189,7 @@ describe("edge function dispatch", () => {
     const init = calls[0]!.init!
     // The opencode free-tier fingerprint must survive the migration untouched.
     const headers = init.headers as Record<string, string>
-    expect(headers["user-agent"]).toBe("opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14")
+    expect(headers["user-agent"]).toBe("opencode/latest/2.0.28/cli")
     expect(headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
     expect(headers.authorization).toBe("Bearer public")
   })
