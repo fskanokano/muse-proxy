@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { handleRequest } from "../supabase/functions/muse-proxy/router.js";
 import { env, getSettings, saveSettings, resolveStaticDir } from "./config.js";
-import { discoverSync, refreshPublicIps, createRequestFetcher, type Discovery } from "./egress.js";
+import { discoverSync, refreshPublicIps, needsProbe, createRequestFetcher, type Discovery } from "./egress.js";
 import { logRequest } from "./logger.js";
 import { verifyPassword, signToken, verifyToken, bearerToken, verifyInternalKey } from "./auth.js";
 import { incomingToRequest, respondWithWeb } from "./bridge.js";
@@ -36,6 +36,13 @@ function getDiscovery(): Discovery {
       /* 用旧缓存 */
     }
     discoveryExp = Date.now() + 60_000;
+    // 新发现的可用副出口立刻探测公网 (不等 6h 周期, 否则后台长期显示"公网未知")。
+    const fresh = discovery.secondaries.filter((s) => s.usable && needsProbe(s.ip)).map((s) => s.ip);
+    if (fresh.length) {
+      void refreshPublicIps(fresh).then(() => {
+        discoveryExp = 0;
+      });
+    }
   }
   return discovery;
 }

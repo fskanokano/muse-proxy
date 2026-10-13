@@ -136,6 +136,14 @@ export async function refreshPublicIps(ips: string[]): Promise<void> {
   }
 }
 
+/** 该源是否需要(重新)探测: 从未探过, 或上次失败已超 15 分钟 (成功的不重复打)。 */
+export function needsProbe(src: string): boolean {
+  const c = probeCache.get(src);
+  if (!c) return true;
+  if (c.publicIp) return false;
+  return Date.now() - c.at > 15 * 60_000;
+}
+
 /** 底层绑定 fetch (node:http 实现, 见 http-fetch.ts; 与全局 fetch 同签名)。 */
 function fetchWithEgressRaw(input: string, init: RequestInit = {}, egressIp?: string): Promise<Response> {
   if (!egressIp) return fetch(input, init);

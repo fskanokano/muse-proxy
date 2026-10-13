@@ -23,8 +23,9 @@ services:
       - MP_DATA_DIR=/data
     volumes:
       - ./data:/data
-      # 宿主机策略路由表名映射 (副出口名字即表名, 如 egress91)
-      - /etc/iproute2/rt_tables:/etc/iproute2/rt_tables:ro
+      # 宿主机策略路由表名映射 (副出口名字即表名; 挂整个目录:
+      # 单文件挂载会在编辑器原子改写后指向旧 inode, 容器永远看到旧表名)
+      - /etc/iproute2:/etc/iproute2:ro
     restart: unless-stopped
     logging:
       driver: json-file
