@@ -1,9 +1,9 @@
 // Diagnostic probe (not part of the test suite): per-value reasoning_effort
 // acceptance for step-5-preview-free on the zen oa-compat edge.
 // Usage: bun run scripts/probe-step5-efforts.ts
-import { lowerChatUpstream } from "../api/_lib/chat-upstream"
-import { identityForCall } from "../api/_lib/identity"
-import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT, type ModelInfo } from "../api/_lib/types"
+import { lowerChatUpstream } from "../supabase/functions/muse-proxy/_lib/chat-upstream.ts"
+import { identityForCall } from "../supabase/functions/muse-proxy/_lib/identity.ts"
+import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT, type ModelInfo } from "../supabase/functions/muse-proxy/_lib/types.ts"
 
 const OA_COMPAT_URL = "https://opencode.ai/zen/v1/chat/completions"
 const STEP5_INFO: ModelInfo = {

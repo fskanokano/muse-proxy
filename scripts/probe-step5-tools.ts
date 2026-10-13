@@ -3,10 +3,10 @@
 // chat-upstream converter — single call, parallel-call replay merge, and
 // multi-turn tool result loop.
 // Usage: bun run scripts/probe-step5-tools.ts
-import { lowerChatUpstream, lowerInputToMessages } from "../api/_lib/chat-upstream"
-import { identityForCall } from "../api/_lib/identity"
-import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT, type ModelInfo, type UpstreamInputItem, type UpstreamTool } from "../api/_lib/types"
-import { OaCompatRaiser, raiseOaCompatChunk, isDonePayload } from "../api/_lib/chat-upstream"
+import { lowerChatUpstream, lowerInputToMessages } from "../supabase/functions/muse-proxy/_lib/chat-upstream.ts"
+import { identityForCall } from "../supabase/functions/muse-proxy/_lib/identity.ts"
+import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT, type ModelInfo, type UpstreamInputItem, type UpstreamTool } from "../supabase/functions/muse-proxy/_lib/types.ts"
+import { OaCompatRaiser, raiseOaCompatChunk, isDonePayload } from "../supabase/functions/muse-proxy/_lib/chat-upstream.ts"
 
 const OA_COMPAT_URL = "https://opencode.ai/zen/v1/chat/completions"
 const STEP5_INFO: ModelInfo = {
