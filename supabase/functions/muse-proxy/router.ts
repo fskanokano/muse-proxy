@@ -25,6 +25,8 @@ import { handleResponsesRequest, type ResponsesDependencies } from "./responses.
 /** Environment contract shared by every facade (fail-closed on absence). */
 export interface ProxyEnv {
   PROXY_API_KEY?: string
+  /** goal 自动续轮上限 (MP_GOAL_MAX_ROUNDS, 缺省 2, 0 = 与 muse 行为一致)。 */
+  goalMaxRounds?: number
 }
 
 /** Test seam: inject a stub `fetch` to avoid touching the real upstream. */
