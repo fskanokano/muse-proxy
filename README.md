@@ -112,7 +112,7 @@ bun run serve:functions # 官方方式,需要 Docker
 ```bash
 bun run typecheck       # tsc:api/ test/ scripts/ + supabase/functions/muse-proxy
 bun run typecheck:edge  # deno check:index.ts / router.ts / serve-edge.ts
-bun run test            # 195 个单元/集成测试(mock 上游,无需联网)
+bun run test            # 200 个单元/集成测试(mock 上游,无需联网)
 bun run smoke:edge      # 真实上游+真实 HTTP:平台层 34 检查 + 3 模型 × 3 门面 × 6 项(需先 serve:edge 或 serve:fake)
 bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印原文(同上需先启动服务)
 ```
@@ -503,6 +503,8 @@ bun run smoke:newmodels # 114/114:3 模型 × 3 门面 + 工具回合 + 记忆 +
   还原成客户端原名(`chat.ts` / `_lib/raise.ts` / `messages.ts` / `_lib/messages-raise.ts` / `responses.ts`
   的聚合与两条流式路径,流式侧另有 `exposeUpstreamNames` 重写 forwarded 帧),再做暴露判定;
   `shouldExposeToolCall` 同时接受原名与别名,客户端声明的名字一律暴露,未声明的保留名一律隐藏。
+- **响应体 tools 回显**:流式 `response.created`/`response.completed` 里上游回显的是**注入后的**工具表
+  (内置 + `mp_*`);门面把它重写成客户端自己声明的工具(原名,注入的内置不外泄),同名时客户端的定义胜出。
 - **模型侧行为**:`bash` 这类上游已无同义内置的名字,模型只能看到 `mp_bash`;这也是**别名不能改成丢弃**的原因
   ——丢弃后客户端就没有 shell 能力了。实测 pi 的请求(工具 `read`/`bash`/`edit`/`write`)从 403 `upstream_auth`
   变成 200,模型调 `mp_bash`,下行还原为 `bash`。
@@ -520,7 +522,7 @@ bun run smoke:newmodels # 114/114:3 模型 × 3 门面 + 工具回合 + 记忆 +
 验证:
 
 ```bash
-bun run test      # 195/195(test/tools.test.ts 钉住别名回环:内置逐字 + mp_ 前缀 + 原名暴露)
+bun run test      # 200/200(test/tools.test.ts 钉住别名原语,test/alias-downlink.test.ts 钉住三门面回环)
 bun run typecheck # tsc --noEmit 通过
 ```
 
