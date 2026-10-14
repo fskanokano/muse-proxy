@@ -12,7 +12,7 @@
 // finish() emits an Anthropic `error` event so clients never mistake a
 // truncated stream for a complete message.
 
-import { shouldExposeToolCall } from "./tools.js"
+import { exposedToolName, shouldExposeToolCall } from "./tools.js"
 import type { UpstreamEvent } from "./types.js"
 
 export interface AnthropicEvent {
@@ -82,7 +82,9 @@ export class MessageRaiser {
 
     if (event.type === "response.output_item.done" && event.item?.type === "function_call") {
       const callId = event.item.call_id ?? event.item.id ?? ""
-      const name = event.item.name ?? ""
+      // Wire name (`mp_bash`) -> client name (`bash`), including for the
+      // client's forced tool_choice comparison in isExposed().
+      const name = exposedToolName(event.item.name ?? "")
       if (!this.isExposed(name)) return out
       this.closeBlock(out)
       const args = event.item.arguments ?? "{}"

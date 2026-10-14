@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { handleMessagesRequest, type MessagesDependencies } from "../api/messages"
 import { lowerMessagesRequest } from "../api/_lib/messages-lower"
 import { MODEL_ID } from "../api/_lib/types"
-import { OPENCODE_BUILTIN_TOOLS, STUB_BUILTIN_TOOL_DESCRIPTION } from "../api/_lib/tools"
+import { OPENCODE_BUILTIN_TOOLS } from "../api/_lib/tools"
 
 const ENV = { PROXY_API_KEY: "test-key" }
 const AUTH = { "x-api-key": "test-key" }
@@ -153,7 +153,7 @@ describe("lowerMessagesRequest", () => {
     ])
   })
 
-  it("maps Anthropic tools (input_schema) after the stubbed builtin set and forces tool_choice auto", () => {
+  it("maps Anthropic tools (input_schema) after the builtin set and forces tool_choice auto", () => {
     const result = lowerMessagesRequest({
       max_tokens: 64,
       tools: [
@@ -162,17 +162,23 @@ describe("lowerMessagesRequest", () => {
           description: "Query weather",
           input_schema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
         },
-        { name: "bash", description: "shadow attempt", input_schema: { type: "object", properties: {} } },
+        { name: "shell", description: "shadow attempt", input_schema: { type: "object", properties: {} } },
       ],
       messages: [{ role: "user", content: "hi" }],
     })
     if ("error" in result) throw new Error("unexpected error")
     expect(result.request.tool_choice).toBe("auto")
-    expect(result.request.tools).toHaveLength(OPENCODE_BUILTIN_TOOLS.length + 1)
+    expect(result.request.tools).toHaveLength(OPENCODE_BUILTIN_TOOLS.length + 2)
     const weather = result.request.tools!.find((tool) => tool.name === "get_weather")!
     expect(weather.parameters).toEqual({ type: "object", properties: { city: { type: "string" } }, required: ["city"] })
-    const bash = result.request.tools!.find((tool) => tool.name === "bash")!
-    expect(bash.description).toBe("shadow attempt")
+    // Reserved name: the builtin ships verbatim and the client's tool is
+    // appended under its alias.
+    const aliased = result.request.tools!.find((tool) => tool.name === "mp_shell")!
+    expect(aliased.description).toBe("shadow attempt")
+    const builtinShell = result.request.tools!.find((tool) => tool.name === "shell")!
+    expect(builtinShell.description).toBe(
+      OPENCODE_BUILTIN_TOOLS.find((tool) => tool.name === "shell")!.description,
+    )
   })
 
   it("maps thinking budget_tokens to the effort whitelist", () => {

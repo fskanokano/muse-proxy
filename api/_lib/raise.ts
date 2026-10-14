@@ -4,7 +4,7 @@
 
 import { encodeReasoningDetails, type ReasoningItem } from "./reasoning.js"
 import { errorChunk } from "./errors.js"
-import { shouldExposeToolCall } from "./tools.js"
+import { exposedToolName, shouldExposeToolCall } from "./tools.js"
 import type { ChatChunk, ChatUsage, UpstreamEvent } from "./types.js"
 import { usageToChat } from "./usage.js"
 
@@ -94,8 +94,12 @@ export function createRaiser(options: RaiserOptions): Raiser {
       const callId = item.call_id ?? item.id
       if (!callId || !item.name) return []
       if (options.toolChoice === "none") return []
+      // Alias first: the model answers to the wire name (`mp_bash`), while
+      // both the expose check and the client's forced tool_choice use the
+      // client's original name (`bash`).
+      const name = exposedToolName(item.name)
       const forced = forcedToolName(options.toolChoice)
-      if (forced !== undefined ? item.name !== forced : !shouldExposeToolCall(item.name, clientToolNames)) return []
+      if (forced !== undefined ? name !== forced : !shouldExposeToolCall(name, clientToolNames)) return []
       const index = state.toolCallCount++
       state.sawToolCalls = true
       return [
@@ -105,7 +109,7 @@ export function createRaiser(options: RaiserOptions): Raiser {
               index,
               id: callId,
               type: "function",
-              function: { name: item.name, arguments: item.arguments ?? "" },
+              function: { name, arguments: item.arguments ?? "" },
             },
           ],
         }),

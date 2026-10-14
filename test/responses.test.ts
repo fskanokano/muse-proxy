@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { handleResponsesRequest, type ResponsesDependencies } from "../api/responses"
 import { normalizeResponsesRequest } from "../api/_lib/responses-lower"
 import { MODEL_ID } from "../api/_lib/types"
-import { OPENCODE_BUILTIN_TOOLS, STUB_BUILTIN_TOOL_DESCRIPTION } from "../api/_lib/tools"
+import { OPENCODE_BUILTIN_TOOLS } from "../api/_lib/tools"
 
 const ENV = { PROXY_API_KEY: "test-key" }
 const AUTH = { authorization: "Bearer test-key" }
@@ -210,30 +210,33 @@ describe("normalizeResponsesRequest", () => {
     expect("error" in noInput && noInput.error.code).toBe("missing_input")
   })
 
-  it("always sends the full builtin tool set with stubbed descriptions, then client tools; tool_choice is auto", () => {
+  it("always sends the full builtin tool set with its real definitions, then aliased client tools; tool_choice is auto", () => {
     const result = normalizeResponsesRequest({
       input: "hi",
       tools: [
         { type: "function", name: "my_tool", description: "mine", parameters: { type: "object", properties: {} } },
         // chat-nested shape tolerated
         { type: "function", function: { name: "nested", description: "nested tool", parameters: { type: "object" } } },
-        // builtin name from the client replaces the stub entry in place
-        { type: "function", name: "bash", description: "client fake bash", parameters: {} },
+        // a client tool under a reserved builtin name may no longer shadow it
+        // (the gate compares builtin definitions verbatim): it ships as
+        // `mp_<name>` and is mapped back when the call is raised.
+        { type: "function", name: "shell", description: "client fake shell", parameters: {} },
       ],
     })
     if ("error" in result) throw new Error("unexpected error")
     const tools = result.request.tools!
-    expect(tools).toHaveLength(OPENCODE_BUILTIN_TOOLS.length + 2)
+    expect(tools).toHaveLength(OPENCODE_BUILTIN_TOOLS.length + 3)
     for (const builtin of OPENCODE_BUILTIN_TOOLS) {
       const sent = tools.find((t) => t.name === builtin.name)!
-      if (builtin.name === "bash") {
-        expect(sent.description).toBe("client fake bash")
-      } else {
-        expect(sent.description).toBe(STUB_BUILTIN_TOOL_DESCRIPTION)
-      }
+      // 门槛会读内置工具的 description 与 parameters，必须原样下发。
+      expect(sent.description).toBe(builtin.description)
+      expect(sent.parameters).toEqual(builtin.parameters)
     }
-    expect(tools.at(-2)).toEqual({ type: "function", name: "my_tool", description: "mine", parameters: { type: "object", properties: {} } })
-    expect(tools.at(-1)!.name).toBe("nested")
+    expect(tools.at(-3)).toEqual({ type: "function", name: "my_tool", description: "mine", parameters: { type: "object", properties: {} } })
+    expect(tools.at(-2)!.name).toBe("nested")
+    expect(tools.at(-1)).toEqual({ type: "function", name: "mp_shell", description: "client fake shell", parameters: {} })
+    // the client's original name stays in the expose set
+    expect(result.clientToolNames.has("shell")).toBe(true)
     expect(result.request.tool_choice).toBe("auto")
   })
 
@@ -346,11 +349,12 @@ describe("responses endpoint integration", () => {
     // Fingerprint headers identical to the chat facade.
     const init = calls[0]!.init!
     const headers = init.headers as Record<string, string>
-    expect(calls[0]!.url).toBe("https://opencode.ai/zen/v1/responses")
+    expect(calls[0]!.url).toBe("https://opencode.ai/inference/v1/responses")
     expect(headers["user-agent"]).toContain("opencode/")
     expect(headers["x-opencode-client"]).toBe("cli")
     expect(headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
-    expect(headers["x-opencode-request"]).toMatch(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
+    // The shipped client sends no x-opencode-request; adding it back 403s.
+    expect(headers["x-opencode-request"]).toBeUndefined()
     expect(headers["x-opencode-project"]).toBe("global")
 
     // Upstream body contract.

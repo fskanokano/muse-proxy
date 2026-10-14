@@ -11,7 +11,7 @@ import { identityForCall } from "./_lib/identity.js"
 import { lowerRequest } from "./_lib/lower.js"
 import { createRaiser } from "./_lib/raise.js"
 import { chunkToSse, DONE_LINE, HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse.js"
-import { shouldExposeToolCall } from "./_lib/tools.js"
+import { exposedToolName, shouldExposeToolCall } from "./_lib/tools.js"
 import type { ChatToolCall, ChatUsage, UpstreamEvent, UpstreamInputItem } from "./_lib/types.js"
 import { resolveModel } from "./_lib/types.js"
 import { usageToChat } from "./_lib/usage.js"
@@ -75,7 +75,9 @@ class CompletionBuilder {
     }
     if (event.type === "response.output_item.done" && event.item?.type === "function_call") {
       const callId = event.item.call_id ?? event.item.id
-      const name = event.item.name
+      // Wire name (`mp_bash`) -> client name (`bash`); tool_choice holds the
+      // client's own name, so resolve before matching.
+      const name = event.item.name === undefined ? undefined : exposedToolName(event.item.name)
       if (callId && name && isExposedChatTool(name, this.clientToolNames, this.toolChoice)) {
         this.toolCalls.push({
           id: callId,
@@ -183,7 +185,8 @@ export async function handleChatRequest(
         "x-opencode-session-id": identity.sessionId,
         "x-session-affinity": identity.sessionId,
         "x-session-id": identity.sessionId,
-        "x-opencode-request": identity.requestId,
+        // The 2.0.29 client does NOT send x-opencode-request, and re-adding the
+        // header trips the free-tier gate (403). The msg_ id stays local-only.
         "x-opencode-client": OPENCODE_CLIENT,
         "x-opencode-project": OPENCODE_PROJECT_ID,
       },

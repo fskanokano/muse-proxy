@@ -38,7 +38,6 @@
 //         cost frame observed (scripts/probe-step5-connect.ts).
 
 import type { ModelInfo, UpstreamInputItem, UpstreamTool } from "./types.js"
-import { appendClientTools } from "./tools.js"
 import { clampEffortForModel } from "./types.js"
 
 export type ChatUpstreamRequest = {
@@ -167,7 +166,9 @@ export function lowerChatUpstream(options: LowerChatUpstreamOptions): ChatUpstre
   // mimo rejects stream:false on the free tier; space-bunny tolerates it, and
   // the raise layer aggregates either way, so always stream upstream.
   if (options.maxOutputTokens !== undefined) request.max_tokens = options.maxOutputTokens
-  const toolList = toolsToChatShape(appendClientTools(tools))
+  // `tools` is already the facade-merged list (verbatim builtins + aliased
+  // client tools): merging here again would alias the builtins themselves.
+  const toolList = toolsToChatShape(tools)
   // The gate requires the builtin names to be present (mimo enforces this in
   // practice; space-bunny does not) — mirror the Responses-path rule.
   if (toolList.length > 0) {

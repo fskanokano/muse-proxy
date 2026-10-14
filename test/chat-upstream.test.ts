@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest"
 import { OaCompatRaiser, isDonePayload, lowerChatUpstream, lowerInputToMessages, toolsToChatShape } from "../api/_lib/chat-upstream"
 import { MODELS, resolveModel, MODEL_MUSE, type UpstreamInputItem, type UpstreamTool } from "../api/_lib/types"
+import { appendClientTools } from "../api/_lib/tools"
 import { modelsList } from "../api/models"
 
 describe("lowerInputToMessages", () => {
@@ -92,10 +93,11 @@ describe("lowerChatUpstream", () => {
   })
 
   it("carries the builtin gate tools in chat-nested shape", () => {
+    // `tools` arrives already merged by the facade (single-merge contract).
     const request = lowerChatUpstream({
       model: MODELS["space-bunny-free"]!,
       input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }],
-      tools: [],
+      tools: appendClientTools([]),
     })
     expect(Array.isArray(request.tools)).toBe(true)
     expect(request.tools!.length).toBeGreaterThan(5)

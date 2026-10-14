@@ -17,7 +17,7 @@ import { identityForCall } from "./_lib/identity.js"
 import { MessageRaiser, type AnthropicEvent } from "./_lib/messages-raise.js"
 import { lowerMessagesRequest } from "./_lib/messages-lower.js"
 import { HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse.js"
-import { shouldExposeToolCall } from "./_lib/tools.js"
+import { exposedToolName, shouldExposeToolCall } from "./_lib/tools.js"
 import type { UpstreamEvent, UpstreamInputItem, UpstreamUsage } from "./_lib/types.js"
 import { MODEL_ID, OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT, resolveModel } from "./_lib/types.js"
 import { runGoalTurns, type GoalCtx } from "./_lib/goal.js"
@@ -129,7 +129,9 @@ export class MessageBuilder {
     }
     if (event.type === "response.output_item.done" && event.item?.type === "function_call") {
       const callId = event.item.call_id ?? event.item.id
-      const name = event.item.name
+      // Wire name (`mp_bash`) -> client name (`bash`); tool_choice holds the
+      // client's own name, so resolve before matching.
+      const name = event.item.name === undefined ? undefined : exposedToolName(event.item.name)
       if (callId && name && isExposedMessagesTool(name, this.clientToolNames, this.toolChoice)) {
         let input: Record<string, unknown>
         try {
@@ -328,7 +330,8 @@ export async function handleMessagesRequest(
         "x-opencode-session-id": identity.sessionId,
         "x-session-affinity": identity.sessionId,
         "x-session-id": identity.sessionId,
-        "x-opencode-request": identity.requestId,
+        // The 2.0.29 client does NOT send x-opencode-request, and re-adding the
+        // header trips the free-tier gate (403). The msg_ id stays local-only.
         "x-opencode-client": OPENCODE_CLIENT,
         "x-opencode-project": OPENCODE_PROJECT_ID,
       },

@@ -18,7 +18,9 @@ import { parseUpstreamSse } from "./sse.js"
 import type { ModelInfo, UpstreamInputItem, UpstreamTool } from "./types.js"
 import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_USER_AGENT } from "./types.js"
 
-const OA_COMPAT_URL = "https://opencode.ai/zen/v1/chat/completions"
+// Same endpoint swap as UPSTREAM_URL (types.ts): /zen/v1 is gated off since
+// 2026-10-14, the live client posts to /inference/v1.
+const OA_COMPAT_URL = "https://opencode.ai/inference/v1/chat/completions"
 
 export interface OaCompatDownstream {
   /** Caller-provided id (chatcmpl-…/resp_…/msg_…), used for logging only. */
@@ -99,7 +101,8 @@ export async function handleOaCompatUpstream(
         "x-opencode-session-id": downstream.identity.sessionId,
         "x-session-affinity": downstream.identity.sessionId,
         "x-session-id": downstream.identity.sessionId,
-        "x-opencode-request": downstream.identity.requestId,
+        // The 2.0.29 client does NOT send x-opencode-request, and re-adding the
+        // header trips the free-tier gate (403). The msg_ id stays local-only.
         "x-opencode-client": OPENCODE_CLIENT,
         "x-opencode-project": OPENCODE_PROJECT_ID,
       },

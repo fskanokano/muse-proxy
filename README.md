@@ -6,9 +6,9 @@
 - **入站**:`POST /api/responses`(OpenAI `/v1/responses` Responses API 规范,支持流式 SSE 与聚合 JSON、工具调用、加密思考回放,详见下文)
 - **入站**:`POST /api/messages`(Anthropic `/v1/messages` Messages API 规范,支持流式 SSE 与聚合 JSON、工具调用、thinking 块,详见下文)
 - **出站**:按模型分格式路由(zen 边缘按格式路由,2026-09-24 探针确认):
-  - `muse-spark-1.3-contributor-free` → `POST https://opencode.ai/zen/v1/responses`(OpenAI Responses API + SSE)
-  - `mimo-v2.6-flash-free` → `POST https://opencode.ai/zen/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游直接 500)
-  - `space-bunny-free` → `POST https://opencode.ai/zen/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游 401 `ModelError: not supported for format openai`)
+  - `muse-spark-1.3-contributor-free` → `POST https://opencode.ai/inference/v1/responses`(OpenAI Responses API + SSE)
+  - `mimo-v2.6-flash-free` → `POST https://opencode.ai/inference/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游直接 500)
+  - `space-bunny-free` → `POST https://opencode.ai/inference/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游 401 `ModelError: not supported for format openai`)
 - **鉴权**:`Authorization: Bearer $PROXY_API_KEY` 或 `x-api-key: $PROXY_API_KEY`(三个端点共用同一鉴权逻辑)。**未设置 `PROXY_API_KEY` 环境变量时,所有端点一律返回 401(fail-closed),不存在开放模式**
 - **免费模型**:上游 API key 固定为字面量 `public`,匿名免费层按 IP 限额,无需注册
 - **模型路由**(`api/_lib/types.ts` 的 `resolveModel`):显式匹配 `mimo*`/`space-bunny*`/`muse*` 前缀,其余任意 model id 沿用历史行为回落 muse;三个端点对同一 model id 语义一致
@@ -32,16 +32,16 @@ client ──chat/completions──▶ muse-proxy ─┬─lower──▶ openco
 
 | 模型 ID | 名称 | 上游格式(出站路由) | 上下文窗口 | 最大输出 | 思考 | 思考强度档位 |
 |---|---|---|---|---|---|---|
-| `muse-spark-1.3-contributor-free` | Muse Spark 1.3 Contributor Free (opencode zen) | `responses` → `POST https://opencode.ai/zen/v1/responses` | 1,048,576 | 32,000 | ✅ | `none / minimal / low / medium / high / xhigh`(默认 `high`;`max` 上游 400) |
-| `mimo-v2.6-flash-free` | MiMo-V2.6-Flash Free | `oa-compat` → `POST https://opencode.ai/zen/v1/chat/completions` | 200,000 | 32,000 | ✅ 恒开 | 无(上游容忍 `reasoning_effort` 但无效,代理不下发该字段) |
-| `space-bunny-free` | Space Bunny Free | `oa-compat` → `POST https://opencode.ai/zen/v1/chat/completions` | 1,048,576 | 32,000 | ✅ 恒开 | `minimal / low / medium / high / xhigh / max`(`none` 钳制为 `minimal`,直接转发上游 400) |
+| `muse-spark-1.3-contributor-free` | Muse Spark 1.3 Contributor Free (opencode zen) | `responses` → `POST https://opencode.ai/inference/v1/responses` | 1,048,576 | 32,000 | ✅ | `none / minimal / low / medium / high / xhigh`(默认 `high`;`max` 上游 400) |
+| `mimo-v2.6-flash-free` | MiMo-V2.6-Flash Free | `oa-compat` → `POST https://opencode.ai/inference/v1/chat/completions` | 200,000 | 32,000 | ✅ 恒开 | 无(上游容忍 `reasoning_effort` 但无效,代理不下发该字段) |
+| `space-bunny-free` | Space Bunny Free | `oa-compat` → `POST https://opencode.ai/inference/v1/chat/completions` | 1,048,576 | 32,000 | ✅ 恒开 | `minimal / low / medium / high / xhigh / max`(`none` 钳制为 `minimal`,直接转发上游 400) |
 
 ### muse-spark-1.3-contributor-free(默认模型)
 
 - **定位**:Muse Spark 1.3 Contributor 免费层,经 opencode zen 原生 Responses 上游提供;**任何未知/未匹配的 model id 都回落到这里**(历史行为,永不报 404)。
 - **别名**:`model id 含 "muse"` 即匹配(如 `muse`、`muse-spark-1.3`)。
 - **思考**:支持**加密思考回放**——流式/聚合响应携带 `encrypted_content`(Responses 门面)或 `reasoning_details`(chat 门面),多轮对话原样透传回上游;Anthropic 门面的 `thinking.budget_tokens` 档位映射不变(`<2048→low`、`<8192→medium`、`<24576→high`、`≥24576→xhigh`,`disabled→none`)。
-- **路由格式**:唯一走 `responses` 上游的模型(`lower.ts` 直发 `/zen/v1/responses`)。
+- **路由格式**:唯一走 `responses` 上游的模型(`lower.ts` 直发 `/inference/v1/responses`)。
 - **定义处**:`api/_lib/types.ts` 的 `MUSE_INFO`。
 
 ### mimo-v2.6-flash-free
@@ -66,7 +66,7 @@ client ──chat/completions──▶ muse-proxy ─┬─lower──▶ openco
 
 ```bash
 bun install            # 或 npm install
-bun run test           # 156 个单元/集成/沙箱端到端测试(mock 上游,无需联网)
+bun run test           # 188 个单元/集成/沙箱端到端测试(mock 上游,无需联网)
 bun run smoke          # 真实连通性冒烟(需联网,验证 stream:false 与 stream:true)
 bun run smoke:responses # /v1/responses 真实上游全功能冒烟(需联网,7 项 36 检查)
 bun run smoke:messages  # /v1/messages 真实上游全功能冒烟(需联网,8 项任务)
@@ -323,7 +323,54 @@ bun run smoke      # 真实上游 200(流式 + 非流式)
 
 抓包是**唯一权威**;源码只用来解释抓包。
 
-## 6. 下次上游再更新时的排查清单(Cheat Sheet)
+## 6. 第四轮事件(2026-10-14):内置工具的定义指纹 + 客户端工具别名
+
+门槛第三次升级:这次校验的是 `tools` 数组里内置工具的**逐字定义**(描述 + 参数 schema),
+并且把“同名遮蔽”也堵死了。修复后顺手把三方真实 CLI 全部实测了一遍。
+
+### 6.1 上游变化
+
+- **12 个内置工具的定义逐字校验**:`edit glob grep question read shell skill subagent webfetch websearch write execute`。
+  描述或 `parameters` 与真实客户端不一致即 403 `FreeTierError`;小截断(尾部几百字符)仍可过,**桩描述彻底不行**。
+- **退役名被拉黑**:`bash` / `task` / `todowrite` 只要出现在 `tools` 里就 403,即使定义与旧版一致。
+- **同名遮蔽失效**:客户端工具复用内置名(pi 的 `read`/`edit`/`write`、pf 的 `shell`)→ 403;
+  “同名替换内置项”的旧规则不再被接受。
+- **额外工具仍可追加**(任意名字、任意数量、顺序无关),门面继续把客户端工具排在 12 个内置之后。
+
+### 6.2 修复(已实施):别名 `mp_<name>`
+
+- **`api/_lib/tools.ts`**:内置定义改为**逐字下发**(不再桩化);保留名集合 =
+  12 个内置 + 退役的 `bash`/`task`/`todowrite`。客户端工具命中保留名时以 `mp_<name>` 别名追加
+  (定义不动,只改名字),其余客户端工具原样追加。
+- **下行映射**:四个门面在把上游 `function_call` 转成客户端事件时先 `exposedToolName()` 把 `mp_<name>`
+  还原成客户端原名(`api/chat.ts` / `_lib/raise.ts` / `api/messages.ts` / `_lib/messages-raise.ts` /
+  `api/responses.ts` 的聚合与两条流式路径,流式侧另有 `exposeUpstreamNames` 重写 forwarded 帧),再做暴露判定;
+  `shouldExposeToolCall` 同时接受原名与别名,客户端声明的名字一律暴露,未声明的保留名一律隐藏。
+- **响应体 tools 回显**:流式 `response.created`/`response.completed` 里上游回显的是**注入后的**工具表
+  (内置 + `mp_*`);门面把它重写成客户端自己声明的工具(原名,注入的内置不外泄),同名时客户端的定义胜出。
+- **模型侧行为**:`bash` 这类上游已无同义内置的名字,模型只能看到 `mp_bash`;这也是**别名不能改成丢弃**的原因
+  ——丢弃后客户端就没有 shell 能力了。实测 pi 的请求(工具 `read`/`bash`/`edit`/`write`)从 403 `upstream_auth`
+  变成 200,模型调 `mp_bash`,下行还原为 `bash`。
+
+### 6.3 验证:三个真实 CLI 全链路
+
+| 客户端 | 端点 | 实测结果 |
+| --- | --- | --- |
+| codex 0.162.1 | `POST /v1/responses` | 12 内置 + 12 客户端工具;`exec_command` 调用 → 本地执行 → 最终答案正确 |
+| pi 1.2.0 | `POST /v1/chat/completions` | `bash` 写文件→ `read` 回读内容正确 → `edit` 两轮收敛,文件内容被改写 |
+| Claude Code 2.1.299 | `POST /v1/messages` | 20 个客户端工具(大写名不撞内置,零别名);`Bash` → `Read` → DONE |
+
+方法:本地起门面 handler(真上游、真 SSE),用真实 CLI 自己的配置指向它,断言副作用(文件内容)+ 门面日志里的工具调用名。
+另外用保留名 `shell` 直击三个门面,确认真上游 200、模型真的调用了 `mp_shell`,且下行只暴露 `shell`。
+
+验证:
+
+```bash
+bun run test      # 188/188(test/tools.test.ts 钉住别名原语,test/alias-downlink.test.ts 钉住三门面回环)
+bun run typecheck # tsc --noEmit 通过
+```
+
+## 7. 下次上游再更新时的排查清单(Cheat Sheet)
 
 按序检查,命中即修:
 
@@ -332,15 +379,17 @@ bun run smoke      # 真实上游 200(流式 + 非流式)
 3. **版本号过期?** 先确认跟的是哪条线:`@opencode/cli`(v2,仓库 `anomalyco/opencode`,线上 UA `opencode/latest/<version>/cli`)还是 `opencode-ai`(v1)。`npm view @opencode/cli version`,更新 `api/_lib/types.ts` 的 `OPENCODE_VERSION` / `OPENCODE_CHANNEL`。上游大版本发布后这几乎总是第一步。
 4. **头指纹变了?** 对比抓包头与 `api/chat.ts` 发的头集合(新增头?删除头?UA 格式?)。注意:**仓库源码的 UA 构造可能与线上二进制不一致**,以抓包为准。
 5. **ID 形状变了?** 两步走:(a) 对照 `packages/schema/src/identifier.ts` 的 `Identifier.create`(前缀、26 字符、**descending 取反**)更新 `api/_lib/identity.ts`;(b) **逐位扫描**——固定前缀只扫低 12 位(或 counter),找出上游接受的区间。2026-10-13 的门槛就是"低 12 位 ≥ 0xFC0":形状正确但 ascending 一样被拒,别只测长度和前缀。
-6. **请求体指纹变了?(2026-09-18 新增此类)** 用抓包体做消融:删 tools / 换 tools / 加 `reasoning` / 改 `prompt_cache_key` / 首条 role 换 `system`,一次只改一项,找到被校验的新字段。内置工具清单存于 `api/_lib/tools.ts`,若 CLI 工具集变化则重抓刷新该数组。
+6. **请求体指纹变了?(2026-09-18 / 2026-10-14 新增此类)** 用抓包体做消融:删 tools / 换 tools / 加 `reasoning` / 改 `prompt_cache_key` / 首条 role 换 `system`,一次只改一项,找到被校验的新字段。内置工具清单与**逐字定义**存于 `api/_lib/tools.ts`,若 CLI 工具集变化则重抓刷新该数组;注意门槛现在会逐字比对描述与参数,且退役名(`bash`/`task`/`todowrite`)与同名遮蔽都会 403——客户端同名工具走 `mp_` 别名。
 7. **上游 API 支持面变了?** 例如 `tool_choice` 现在只支持 `"auto"`;留意 400 响应里的 `param` 字段直接指出被拒参数。
 8. **报错文案 grep 不到?** 校验在闭源边缘服务里,别浪费时间翻 CLI 逻辑,专注完整模仿客户端指纹(头 + 体)。
 9. **免费模型 ID 变了?** 留意 zen 模型目录与 `MODEL_ID`(`muse-spark-1.3-contributor-free`)。
 10. 修复后按顺序跑 `bun run test` → `bun run smoke` → `bun run eval`,全绿再收工。
 
-## 7. 行为与合规注意事项
+## 8. 行为与合规注意事项
 
 - 指纹模仿的是**无凭据的免费匿名层**,按 IP 限额;请勿用于绕过付费或大规模滥用,上游随时可能再次收紧。
-- 内置工具只以**桩描述**发送(名字是真的,描述声明不可用):模型不会自发调用客户端无法执行的 CLI 工具;代理的兼容性目标是让 OpenAI 客户端自己的工具调用正常工作。
+- 内置工具按门槛要求**逐字下发**(描述/参数与真实客户端一致)——这是 2026-10-14 起过门槛的必要条件。
+  为保证模型优先使用客户端自己的工具,同名客户端工具以 `mp_<name>` 别名下发、下行再还原;
+  客户端未声明的内置调用在上下行两侧都被隐藏,模型不会拿到客户端无法执行的调用结果。
 - 代理无状态,不落盘任何会话数据;加密思考内容(`encrypted_content`)按上游要求原样回传以支持多轮思考回放。
 - `MODEL_ID` 把所有请求映射到免费模型;如需接入其他模型,改 `api/_lib/types.ts` 的 `MODEL_ID` 并确认上游允许。
