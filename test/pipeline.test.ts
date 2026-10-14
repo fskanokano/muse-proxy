@@ -118,7 +118,7 @@ describe("handleChatRequest", () => {
     )
     expect(calls).toHaveLength(1)
     const init = calls[0]!.init!
-    expect(calls[0]!.url).toBe("https://opencode.ai/zen/v1/responses")
+    expect(calls[0]!.url).toBe("https://opencode.ai/inference/v1/responses")
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer public")
     const body = JSON.parse(String(init.body)) as {
       store: boolean
@@ -138,7 +138,7 @@ describe("handleChatRequest", () => {
     // Free-tier body fingerprint: builtins always present, tool_choice auto,
     // prompt_cache_key mirrors the session header.
     expect(body.tools.map((t) => t.name)).toEqual([
-      "bash", "edit", "glob", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write",
+      "edit", "glob", "grep", "question", "read", "shell", "skill", "subagent", "webfetch", "websearch", "write", "execute",
     ])
     expect(body.tool_choice).toBe("auto")
     const headers = init.headers as Record<string, string>
@@ -149,20 +149,21 @@ describe("handleChatRequest", () => {
     mockFetch(sseResponse([{ type: "response.completed", response: {} }]))
     await handleChatRequest(postRequest({ messages: [{ role: "user", content: "hi" }] }), ENV)
     const headers = calls[0]!.init!.headers as Record<string, string>
-    // Mirrors the shipped 2.0.28 CLI wire format (captured 2026-10-13):
+    // Mirrors the shipped 2.0.29 CLI wire format (captured 2026-10-14):
     // `opencode/<channel>/<version>/<client>` — NOT the legacy v1
     // ai-sdk/provider-utils UA the 1.18.x binary emitted.
-    expect(headers["user-agent"]).toBe("opencode/latest/2.0.28/cli")
+    expect(headers["user-agent"]).toBe("opencode/latest/2.0.29/cli")
     expect(headers["x-opencode-client"]).toBe("cli")
     expect(headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
-    expect(headers["x-opencode-request"]).toMatch(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
+    // The shipped client sends no x-opencode-request; adding it back 403s.
+    expect(headers["x-opencode-request"]).toBeUndefined()
     // The shipped client stamps the same session id under four names.
     expect(headers["x-opencode-session-id"]).toBe(headers["x-opencode-session"])
     expect(headers["x-session-affinity"]).toBe(headers["x-opencode-session"])
     expect(headers["x-session-id"]).toBe(headers["x-opencode-session"])
     expect(headers["x-opencode-project"]).toBe("global")
-    // Session and message ids differ per upstream call.
-    expect(headers["x-opencode-session"]).not.toBe(headers["x-opencode-request"])
+    // No msg_ id rides along: the gate rejects the extra header.
+    expect(Object.keys(headers).filter((k) => k.includes("request"))).toEqual([])
     // Gate invariant (probed 2026-10-13): the gate re-derives the descending
     // per-millisecond counter from the session id's low 12 bits and 403s unless
     // it is >= 0xFC0. An ascending id or a large counter reads as non-opencode.
@@ -171,15 +172,15 @@ describe("handleChatRequest", () => {
     expect(low12).toBeGreaterThanOrEqual(0xfc0)
   })
 
-  it("appends client tools after the builtin set and stubs builtin descriptions", async () => {
+  it("appends client tools after the builtin set and aliases reserved names", async () => {
     mockFetch(sseResponse([{ type: "response.completed", response: {} }]))
     await handleChatRequest(
       postRequest({
         messages: [{ role: "user", content: "hi" }],
         tools: [
           { type: "function", function: { name: "web_search", description: "Search the web.", parameters: { type: "object" } } },
-          // A client tool shadowing a builtin name replaces the stub entry in place.
-          { type: "function", function: { name: "bash", description: "client bash", parameters: { type: "object" } } },
+          // A client tool reusing a reserved builtin name travels under its mp_ alias.
+          { type: "function", function: { name: "shell", description: "client shell", parameters: { type: "object" } } },
         ],
       }),
       ENV,
@@ -188,11 +189,12 @@ describe("handleChatRequest", () => {
       tools: Array<{ name: string; description: string }>
     }
     const names = body.tools.map((t) => t.name)
-    expect(names.slice(0, 11)).toEqual(["bash", "edit", "glob", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write"])
+    expect(names.slice(0, 12)).toEqual(["edit", "glob", "grep", "question", "read", "shell", "skill", "subagent", "webfetch", "websearch", "write", "execute"])
     expect(names).toContain("web_search")
-    expect(names.filter((n) => n === "bash")).toHaveLength(1)
-    // builtin descriptions are stubbed; client tools keep their own
-    expect(body.tools[0]!.description).toBe("client bash")
+    // the builtin entry ships verbatim and the client copy is appended as mp_shell
+    expect(names.filter((n) => n === "shell")).toHaveLength(1)
+    expect(body.tools.find((t) => t.name === "shell")!.description).not.toBe("client shell")
+    expect(body.tools.find((t) => t.name === "mp_shell")!.description).toBe("client shell")
     expect(body.tools.find((t) => t.name === "web_search")!.description).toBe("Search the web.")
   })
 
@@ -219,7 +221,8 @@ describe("handleChatRequest", () => {
     const first = calls[0]!.init!.headers as Record<string, string>
     const second = calls[1]!.init!.headers as Record<string, string>
     expect(first["x-opencode-session"]).not.toBe(second["x-opencode-session"])
-    expect(first["x-opencode-request"]).not.toBe(second["x-opencode-request"])
+    expect(first["x-opencode-request"]).toBeUndefined()
+    expect(second["x-opencode-request"]).toBeUndefined()
     // opencode session ids look like ses_<26 chars>, not bare UUIDs
     expect(first["x-opencode-session"]).not.toMatch(/^[0-9a-f-]{36}$/)
   })

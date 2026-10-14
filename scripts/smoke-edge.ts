@@ -24,8 +24,12 @@
 const BASE = (process.env.EDGE_BASE_URL ?? "http://127.0.0.1:8788/functions/v1/muse-proxy/v1").replace(/\/+$/, "")
 const KEY = process.env.PROXY_API_KEY ?? ""
 const MODELS = ["muse-spark-1.3-contributor-free", "mimo-v2.6-flash-free", "space-bunny-free"]
+// Builtin tool names of the current opencode CLI, as captured from its real
+// wire request (see supabase/functions/muse-proxy/_lib/tools.ts). Kept inline so
+// this conformance client stays dependency-free: it talks HTTP to a deployed
+// proxy, never imports the proxy's own modules.
 const BUILTIN_TOOL_NAMES = new Set([
-  "bash", "edit", "glob", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write",
+  "edit", "glob", "grep", "question", "read", "shell", "skill", "subagent", "webfetch", "websearch", "write", "execute",
 ])
 
 const args = new Map<string, string>(
@@ -661,7 +665,9 @@ async function checkPlatform(): Promise<void> {
   check(catalog.status === 200, "GET /v1/models is auth-legal", `status=${catalog.status}`)
   const list = (await catalog.json()) as { object?: string; data?: Array<{ id?: string; reasoning_levels?: string[]; context_window?: number }> }
   check(list.object === "list", "catalog uses the OpenAI models-list envelope", String(list.object))
-  check((list.data ?? []).length === 3, "catalog lists all 3 free models", String((list.data ?? []).length))
+  // The catalog may grow (e.g. step-5-preview-free); assert every model this
+  // suite drives is present rather than a hardcoded total.
+  check((list.data ?? []).length >= MODELS.length, `catalog lists at least every smoke model (${MODELS.length})`, String((list.data ?? []).length))
   for (const model of MODELS) {
     const entry = (list.data ?? []).find((candidate) => candidate.id === model)
     check(entry !== undefined, `catalog contains ${model}`)

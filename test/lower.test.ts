@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { lowerRequest } from "../supabase/functions/muse-proxy/_lib/lower.ts"
+import { OPENCODE_BUILTIN_TOOLS } from "../supabase/functions/muse-proxy/_lib/tools.ts"
 import { encodeReasoningDetails, type ReasoningItem } from "../supabase/functions/muse-proxy/_lib/reasoning.ts"
 
 const ok = (result: ReturnType<typeof lowerRequest>) => {
@@ -25,7 +26,7 @@ describe("lowerRequest: basic mapping", () => {
     expect(request.reasoning).toEqual({ effort: "high", summary: "auto" })
     expect(request.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "hi" }] }])
     expect(request.stream).toBe(true)
-    expect(request.tools).toHaveLength(11)
+    expect(request.tools).toHaveLength(OPENCODE_BUILTIN_TOOLS.length)
     expect(request.tool_choice).toBe("auto")
   })
 
@@ -140,7 +141,7 @@ describe("lowerRequest: parameters", () => {
       parameters: { type: "object" },
     })
     const names = request.tools!.map((t) => t.name)
-    for (const builtin of ["bash", "edit", "glob", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write"]) {
+    for (const builtin of ["edit", "glob", "grep", "question", "read", "shell", "skill", "subagent", "webfetch", "websearch", "write", "execute"]) {
       expect(names).toContain(builtin)
     }
     expect(names.filter((n) => n === "echo")).toHaveLength(1)
@@ -148,26 +149,32 @@ describe("lowerRequest: parameters", () => {
     expect(request.tool_choice).toBe("auto")
   })
 
-  it("stubs builtin tool descriptions so the model cannot call unexecutable CLI tools", () => {
+  it("ships the real builtin definitions: the gate reads descriptions and schemas", () => {
     const request = ok(lowerRequest({ messages: [] }))
-    expect(request.tools).toHaveLength(11)
+    expect(request.tools).toHaveLength(OPENCODE_BUILTIN_TOOLS.length)
     for (const tool of request.tools!) {
-      expect(tool.description).toBe("Reserved opencode CLI tool. Not available in this session; never call it.")
+      const canonical = OPENCODE_BUILTIN_TOOLS.find((t) => t.name === tool.name)!
+      expect(tool.description).toBe(canonical.description)
+      expect(tool.parameters).toEqual(canonical.parameters)
     }
   })
 
-  it("lets client tools shadowing builtin names replace the stub entry in place", () => {
+  it("sends client tools under reserved builtin names as mp_ aliases", () => {
     const request = ok(
       lowerRequest({
         messages: [],
-        tools: [{ type: "function", function: { name: "bash", description: "client bash", parameters: { type: "object" } } }],
+        tools: [{ type: "function", function: { name: "shell", description: "client shell", parameters: { type: "object" } } }],
       }),
     )
-    const bash = request.tools!.filter((t) => t.name === "bash")
-    expect(bash).toHaveLength(1)
-    expect(bash[0]!.description).toBe("client bash")
-    // Name set still carries the full builtin set, so the gate still passes.
-    expect(request.tools).toHaveLength(11)
+    // The builtin definition ships verbatim; the client's own shell travels
+    // under the alias so the gate never sees a reused reserved name.
+    const builtin = request.tools!.filter((t) => t.name === "shell")
+    expect(builtin).toHaveLength(1)
+    expect(builtin[0]!.description).not.toBe("client shell")
+    const aliased = request.tools!.filter((t) => t.name === "mp_shell")
+    expect(aliased).toHaveLength(1)
+    expect(aliased[0]!.description).toBe("client shell")
+    expect(request.tools).toHaveLength(OPENCODE_BUILTIN_TOOLS.length + 1)
   })
 
   it("sets prompt_cache_key to the session id when provided", () => {

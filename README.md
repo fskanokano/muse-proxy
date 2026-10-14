@@ -112,7 +112,7 @@ bun run serve:functions # 官方方式,需要 Docker
 ```bash
 bun run typecheck       # tsc:api/ test/ scripts/ + supabase/functions/muse-proxy
 bun run typecheck:edge  # deno check:index.ts / router.ts / serve-edge.ts
-bun run test            # 181 个单元/集成测试(mock 上游,无需联网)
+bun run test            # 195 个单元/集成测试(mock 上游,无需联网)
 bun run smoke:edge      # 真实上游+真实 HTTP:平台层 34 检查 + 3 模型 × 3 门面 × 6 项(需先 serve:edge 或 serve:fake)
 bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印原文(同上需先启动服务)
 ```
@@ -480,7 +480,51 @@ bun run smoke:newmodels # 114/114:3 模型 × 3 门面 + 工具回合 + 记忆 +
 
 抓包是**唯一权威**;源码只用来解释抓包。
 
-## 6. 下次上游再更新时的排查清单(Cheat Sheet)
+## 6. 第四轮事件(2026-10-14):内置工具的定义指纹 + 客户端工具别名
+
+门槛第三次升级:这次校验的是 `tools` 数组里内置工具的**逐字定义**(描述 + 参数 schema),
+并且把“同名遮蔽”也堵死了。修复后顺手把三方真实 CLI 全部实测了一遍。
+
+### 6.1 上游变化
+
+- **12 个内置工具的定义逐字校验**:`edit glob grep question read shell skill subagent webfetch websearch write execute`。
+  描述或 `parameters` 与真实客户端不一致即 403 `FreeTierError`;小截断(尾部几百字符)仍可过,**桩描述彻底不行**。
+- **退役名被拉黑**:`bash` / `task` / `todowrite` 只要出现在 `tools` 里就 403,即使定义与旧版一致。
+- **同名遮蔽失效**:客户端工具复用内置名(pi 的 `read`/`edit`/`write`、pf 的 `shell`)→ 403;
+  “同名替换内置项”的旧规则不再被接受。
+- **额外工具仍可追加**(任意名字、任意数量、顺序无关),门面继续把客户端工具排在 12 个内置之后。
+
+### 6.2 修复(已实施):别名 `mp_<name>`
+
+- **`supabase/functions/muse-proxy/_lib/tools.ts`**:内置定义改为**逐字下发**(不再桩化);保留名集合 =
+  12 个内置 + 退役的 `bash`/`task`/`todowrite`。客户端工具命中保留名时以 `mp_<name>` 别名追加
+  (定义不动,只改名字),其余客户端工具原样追加。
+- **下行映射**:四个门面在把上游 `function_call` 转成客户端事件时先 `exposedToolName()` 把 `mp_<name>`
+  还原成客户端原名(`chat.ts` / `_lib/raise.ts` / `messages.ts` / `_lib/messages-raise.ts` / `responses.ts`
+  的聚合与两条流式路径,流式侧另有 `exposeUpstreamNames` 重写 forwarded 帧),再做暴露判定;
+  `shouldExposeToolCall` 同时接受原名与别名,客户端声明的名字一律暴露,未声明的保留名一律隐藏。
+- **模型侧行为**:`bash` 这类上游已无同义内置的名字,模型只能看到 `mp_bash`;这也是**别名不能改成丢弃**的原因
+  ——丢弃后客户端就没有 shell 能力了。实测 pi 的请求(工具 `read`/`bash`/`edit`/`write`)从 403 `upstream_auth`
+  变成 200,模型调 `mp_bash`,下行还原为 `bash`。
+
+### 6.3 验证:三个真实 CLI 全链路
+
+| 客户端 | 端点 | 实测结果 |
+| --- | --- | --- |
+| codex 0.162.1 | `POST /v1/responses` | 12 内置 + 12 客户端工具;`exec_command` 调用 → 本地执行 → 最终答案正确 |
+| pi 1.2.0 | `POST /v1/chat/completions` | `bash` 写文件→ `read` 回读内容正确 → `edit` 两轮收敛,文件内容被改写 |
+| Claude Code 2.1.299 | `POST /v1/messages` | 20 个客户端工具(大写名不撞内置,零别名);`Bash` → `Read` → DONE |
+
+方法:本地起门面 handler(真上游、真 SSE),用真实 CLI 自己的配置指向它,断言副作用(文件内容)+ 门面日志里的工具调用名。
+
+验证:
+
+```bash
+bun run test      # 195/195(test/tools.test.ts 钉住别名回环:内置逐字 + mp_ 前缀 + 原名暴露)
+bun run typecheck # tsc --noEmit 通过
+```
+
+## 7. 下次上游再更新时的排查清单(Cheat Sheet)
 
 按序检查,命中即修:
 
@@ -489,15 +533,17 @@ bun run smoke:newmodels # 114/114:3 模型 × 3 门面 + 工具回合 + 记忆 +
 3. **版本号过期?** 先确认跟的是哪条线:`@opencode/cli`(v2,仓库 `anomalyco/opencode`,线上 UA `opencode/latest/<version>/cli`)还是 `opencode-ai`(v1)。`npm view @opencode/cli version`,更新 `supabase/functions/muse-proxy/_lib/types.ts` 的 `OPENCODE_VERSION` / `OPENCODE_CHANNEL`。上游大版本发布后这几乎总是第一步。
 4. **头指纹变了?** 对比抓包头与 `supabase/functions/muse-proxy/chat.ts` 发的头集合(新增头?删除头?UA 格式?)。注意:**仓库源码的 UA 构造可能与线上二进制不一致**,以抓包为准。
 5. **ID 形状变了?** 两步走:(a) 对照 `packages/schema/src/identifier.ts` 的 `Identifier.create`(前缀、26 字符、**descending 取反**)更新 `supabase/functions/muse-proxy/_lib/identity.ts`;(b) **逐位扫描**——固定前缀只扫低 12 位(或 counter),找出上游接受的区间。2026-10-13 的门槛就是"低 12 位 ≥ 0xFC0":形状正确但 ascending 一样被拒,别只测长度和前缀。
-6. **请求体指纹变了?(2026-09-18 新增此类)** 用抓包体做消融:删 tools / 换 tools / 加 `reasoning` / 改 `prompt_cache_key` / 首条 role 换 `system`,一次只改一项,找到被校验的新字段。内置工具清单存于 `supabase/functions/muse-proxy/_lib/tools.ts`,若 CLI 工具集变化则重抓刷新该数组。
+6. **请求体指纹变了?(2026-09-18 / 2026-10-14 新增此类)** 用抓包体做消融:删 tools / 换 tools / 加 `reasoning` / 改 `prompt_cache_key` / 首条 role 换 `system`,一次只改一项,找到被校验的新字段。内置工具清单与**逐字定义**存于 `supabase/functions/muse-proxy/_lib/tools.ts`,若 CLI 工具集变化则重抓刷新该数组;注意门槛现在会逐字比对描述与参数,且退役名(`bash`/`task`/`todowrite`)与同名遮蔽都会 403——客户端同名工具走 `mp_` 别名。
 7. **上游 API 支持面变了?** 例如 `tool_choice` 现在只支持 `"auto"`;留意 400 响应里的 `param` 字段直接指出被拒参数。
 8. **报错文案 grep 不到?** 校验在闭源边缘服务里,别浪费时间翻 CLI 逻辑,专注完整模仿客户端指纹(头 + 体)。
 9. **免费模型 ID 变了?** 留意 zen 模型目录与 `MODEL_ID`(`muse-spark-1.3-contributor-free`)。
 10. 修复后按顺序跑 `bun run test` → `bun run smoke` → `bun run eval`,全绿再收工。
 
-## 7. 行为与合规注意事项
+## 8. 行为与合规注意事项
 
 - 指纹模仿的是**无凭据的免费匿名层**,按 IP 限额;请勿用于绕过付费或大规模滥用,上游随时可能再次收紧。
-- 内置工具只以**桩描述**发送(名字是真的,描述声明不可用):模型不会自发调用客户端无法执行的 CLI 工具;代理的兼容性目标是让 OpenAI 客户端自己的工具调用正常工作。
+- 内置工具按门槛要求**逐字下发**(描述/参数与真实客户端一致)——这是 2026-10-14 起过门槛的必要条件。
+  为保证模型优先使用客户端自己的工具,同名客户端工具以 `mp_<name>` 别名下发、下行再还原;
+  客户端未声明的内置调用在上下行两侧都被隐藏,模型不会拿到客户端无法执行的调用结果。
 - 代理无状态,不落盘任何会话数据;加密思考内容(`encrypted_content`)按上游要求原样回传以支持多轮思考回放。
 - `MODEL_ID` 把所有请求映射到免费模型;如需接入其他模型,改 `supabase/functions/muse-proxy/_lib/types.ts` 的 `MODEL_ID` 并确认上游允许。

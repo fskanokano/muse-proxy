@@ -6,11 +6,12 @@
 // Free-tier fingerprint note: the zen edge also gates on the request body's
 // tools array — the opencode builtin tool names must be present or the
 // request 403s with FreeTierError even when the header fingerprint is
-// perfect (probed 2026-09-18). So every lowered request carries the full
-// builtin set (descriptions stubbed so the model never calls a tool the
-// OpenAI client cannot execute) with the client's own tools appended.
+// perfect (probed 2026-09-18), and since 2026-10-14 the gate also reads the
+// builtin descriptions + parameter schemas. So every lowered request carries
+// the full builtin set verbatim (see _lib/tools.ts) with the client's own
+// tools appended.
 
-import { OPENCODE_BUILTIN_TOOLS, STUB_BUILTIN_TOOL_DESCRIPTION } from "./tools.ts"
+import { appendClientTools } from "./tools.ts"
 import {
   DEFAULT_REASONING_EFFORT,
   MAX_OUTPUT_TOKENS,
@@ -157,27 +158,18 @@ function toolChoice(): UpstreamToolChoice {
   return "auto"
 }
 
-const BUILTIN_NAMES = new Set(OPENCODE_BUILTIN_TOOLS.map((t) => t.name))
-
-// Builtins with stubbed descriptions: the gate only checks names, and stubs
-// keep the model from calling CLI tools the OpenAI client never declared.
-const STUBBED_BUILTINS: UpstreamTool[] = OPENCODE_BUILTIN_TOOLS.map((tool) => ({
-  ...tool,
-  description: STUB_BUILTIN_TOOL_DESCRIPTION,
-}))
-
-// The gate only checks the builtin NAME set. Shadow rule: a client tool
-// whose name collides with a builtin REPLACES the stub entry in place, so
-// the model sees the client's real description/parameters while the name
-// set still passes the gate.
+// The gate compares the builtin definitions verbatim, so they ship as-is and a
+// client tool may no longer shadow one by name (2026-10-14): reserved client
+// names travel under an `mp_` alias instead (see tools.ts appendClientTools).
 function mergeToolsWithBuiltins(value: unknown): { tools: UpstreamTool[]; clientToolNames: Set<string> } {
-  const clientByName = new Map<string, UpstreamTool>()
+  const clientTools: UpstreamTool[] = []
+  const clientToolNames = new Set<string>()
   if (Array.isArray(value)) {
     for (const entry of value) {
       if (!isRecord(entry)) continue
       const fn = isRecord(entry.function) ? entry.function : undefined
       const name = asString(fn?.name)
-      if (name === undefined) continue
+      if (name === undefined || clientToolNames.has(name)) continue
       const parameters = isRecord(fn?.parameters) ? fn.parameters : { type: "object", properties: {} }
       const tool: UpstreamTool = {
         type: "function",
@@ -186,13 +178,11 @@ function mergeToolsWithBuiltins(value: unknown): { tools: UpstreamTool[]; client
         parameters,
       }
       if (typeof fn?.strict === "boolean") tool.strict = fn.strict
-      clientByName.set(name, tool)
+      clientTools.push(tool)
+      clientToolNames.add(name)
     }
   }
-  const tools = STUBBED_BUILTINS.map((tool) => clientByName.get(tool.name) ?? tool).concat(
-    [...clientByName.values()].filter((tool) => !BUILTIN_NAMES.has(tool.name)),
-  )
-  return { tools, clientToolNames: new Set(clientByName.keys()) }
+  return { tools: appendClientTools(clientTools), clientToolNames }
 }
 
 function clampMaxOutputTokens(chat: Record<string, unknown>): number | undefined {

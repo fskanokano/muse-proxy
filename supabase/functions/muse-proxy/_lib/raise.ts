@@ -3,7 +3,7 @@
 // heartbeats, and non-stream aggregation.
 
 import { encodeReasoningDetails, type ReasoningItem } from "./reasoning.ts"
-import { shouldExposeToolCall } from "./tools.ts"
+import { exposedToolName, shouldExposeToolCall } from "./tools.ts"
 import type { ChatChunk, ChatUsage, UpstreamEvent } from "./types.ts"
 import { usageToChat } from "./usage.ts"
 
@@ -89,8 +89,12 @@ export function createRaiser(options: RaiserOptions): Raiser {
       const callId = item.call_id ?? item.id
       if (!callId || !item.name) return []
       if (options.toolChoice === "none") return []
+      // Alias first: the model answers to the wire name (`mp_bash`), while
+      // both the expose check and the client's forced tool_choice use the
+      // client's original name (`bash`).
+      const name = exposedToolName(item.name)
       const forced = forcedToolName(options.toolChoice)
-      if (forced !== undefined ? item.name !== forced : !shouldExposeToolCall(item.name, clientToolNames)) return []
+      if (forced !== undefined ? name !== forced : !shouldExposeToolCall(name, clientToolNames)) return []
       const index = state.toolCallCount++
       state.sawToolCalls = true
       return [
@@ -100,7 +104,7 @@ export function createRaiser(options: RaiserOptions): Raiser {
               index,
               id: callId,
               type: "function",
-              function: { name: item.name, arguments: item.arguments ?? "" },
+              function: { name, arguments: item.arguments ?? "" },
             },
           ],
         }),
