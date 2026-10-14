@@ -5,7 +5,13 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-export const UPSTREAM_URL = "https://opencode.ai/zen/v1/responses"
+// Endpoint moved 2026-10-14: the legacy /zen/v1 path now answers every
+// inference call with 403 FreeTierError; the live client (2.0.29) reads
+// https://opencode.ai/inference/v1 from the runtime catalog
+// (models.opencode.ai/api.json -> providers.opencode.api) and posts there.
+// The model->format routing is unchanged: muse keeps /responses, the
+// oa-compat models keep /chat/completions (re-probed both ways).
+export const UPSTREAM_URL = "https://opencode.ai/inference/v1/responses"
 // opencode zen free models accept the literal api key "public" when no zen
 // account key is configured (see opencode provider.ts custom loader).
 export const UPSTREAM_API_KEY = "public"
@@ -15,17 +21,19 @@ export const UPSTREAM_API_KEY = "public"
 // releases tightened this fingerprint; non-matching traffic gets
 // "OpenCode's free tier can only be used from within OpenCode" (the gate
 // lives in the closed-source edge; the open-source repo only tells us what
-// a real client sends).
+// a real client sends). Since 2026-10-14 the gate also reads the request
+// body's tools array CONTENT (descriptions + parameter schemas), so the
+// builtin definitions in _lib/tools.ts ship verbatim.
 //
 // UA mirrors what the shipped opencode CLI emits on the wire. The v2 client
 // (`@opencode/cli`, repo github.com/anomalyco/opencode — the repo the README
 // clones) builds it as `opencode/<channel>/<version>/<name>`, captured
-// 2026-10-13 as `opencode/latest/2.0.28/cli`. The legacy v1 `opencode-ai`
+// 2026-10-14 as `opencode/latest/2.0.29/cli`. The legacy v1 `opencode-ai`
 // binary emitted `opencode/<version> ai-sdk/provider-utils/<v> runtime/bun/<v>`
 // instead; both pass the gate today, but the proxy mirrors the current
 // client. Re-verify on every upstream version bump (`npm view @opencode/cli
 // version`; the channel is "latest" for any non-snapshot release).
-export const OPENCODE_VERSION = "2.0.28"
+export const OPENCODE_VERSION = "2.0.29"
 export const OPENCODE_CHANNEL = "latest"
 export const OPENCODE_CLIENT = "cli"
 export const UPSTREAM_USER_AGENT = `opencode/${OPENCODE_CHANNEL}/${OPENCODE_VERSION}/${OPENCODE_CLIENT}`

@@ -17,7 +17,7 @@ import { jsonError, upstreamErrorToOpenAI } from "./_lib/errors.ts"
 import { identityForCall } from "./_lib/identity.ts"
 import { normalizeResponsesRequest } from "./_lib/responses-lower.ts"
 import { HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse.ts"
-import { shouldExposeToolCall } from "./_lib/tools.ts"
+import { exposedToolName, shouldExposeToolCall } from "./_lib/tools.ts"
 import type { UpstreamEvent, UpstreamUsage } from "./_lib/types.ts"
 import { DEFAULT_REASONING_EFFORT, MODEL_ID, OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT, resolveModel } from "./_lib/types.ts"
 import { handleOaCompatUpstream } from "./_lib/oa-compat.ts"
@@ -37,6 +37,65 @@ function jsonResponse(res: { status: number; body: unknown }): Response {
     status: res.status,
     headers: { "content-type": "application/json" },
   })
+}
+
+// Alias mapping on the way down: a call the model made to an `mp_<name>` entry
+// (the wire form of a client tool whose name is reserved by the gate) is
+// delivered to the client under its original name.
+function exposeItemName(item: Record<string, unknown>): Record<string, unknown> {
+  if (typeof item.name === "string" && (item.type === "function_call" || item.type === "custom_tool_call")) {
+    const name = exposedToolName(item.name)
+    if (name !== item.name) return { ...item, name }
+  }
+  return item
+}
+
+// The facade injects the builtin gate tools on the client's behalf, so the
+// `response.tools` echo upstream sends back is not the client's own tool set:
+// it carries the injected builtins and the `mp_<reserved>` wire name of any
+// client tool that collided with a builtin. Clients only ever see their own
+// tools, under their original names. Later entries win, so a client tool that
+// reuses a reserved name replaces the injected definition of the same name.
+function exposeResponseTools(
+  response: Record<string, unknown>,
+  clientToolNames: ReadonlySet<string>,
+): Record<string, unknown> {
+  const tools = response.tools
+  if (!Array.isArray(tools)) return response
+  const byName = new Map<string, unknown>()
+  for (const entry of tools) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue
+    const record = entry as Record<string, unknown>
+    const wire = typeof record.name === "string" ? record.name : undefined
+    if (wire === undefined) continue
+    const name = exposedToolName(wire)
+    if (!clientToolNames.has(name)) continue
+    byName.set(name, wire === name ? record : { ...record, name })
+  }
+  return { ...response, tools: [...byName.values()] }
+}
+
+function exposeUpstreamNames(
+  event: Record<string, unknown>,
+  clientToolNames?: ReadonlySet<string>,
+): Record<string, unknown> {
+  const item = event.item as Record<string, unknown> | undefined
+  const exposedItem = item === undefined ? undefined : exposeItemName(item)
+  let out = exposedItem !== item ? { ...event, item: exposedItem } : event
+  if (
+    typeof out.name === "string" &&
+    typeof out.type === "string" &&
+    out.type.startsWith("response.function_call_arguments")
+  ) {
+    const name = exposedToolName(out.name)
+    if (name !== out.name) out = { ...out, name }
+  }
+  const response = out.response
+  if (clientToolNames !== undefined && typeof response === "object" && response !== null && !Array.isArray(response)) {
+    const exposed = exposeResponseTools(response as Record<string, unknown>, clientToolNames)
+    if (exposed !== response) out = { ...out, response: exposed }
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +135,11 @@ export class ResponseBuilder {
     if (event.type === "response.output_item.done" && event.item) {
       const item = event.item as unknown as OutputItem & { name?: unknown; arguments?: unknown }
       if (item.type === "function_call" && typeof item.name === "string") {
-        const toolName: string = item.name
+        // Wire name (`mp_edit`) -> client name (`edit`) before the custom tool
+        // rewrite, the namespace rewrite, and the expose check.
+        const wireName: string = item.name
+        const toolName = exposedToolName(wireName)
+        if (toolName !== wireName) item.name = toolName
         // custom 转写工具（如 codex exec）：下行重写为原生 custom_tool_call，
         // 本地线程执行器只接受 custom 信封，function 形必报 incompatible payload。
         if (this.customToolNames.has(toolName)) {
@@ -294,17 +357,23 @@ export async function handleResponsesRequest(
                   const response = event.response as Record<string, unknown> | undefined
                   const output = response?.output
                   if (response && Array.isArray(output)) {
-                    response.output = output.filter((entry) => {
-                      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return true
-                      const record = entry as Record<string, unknown>
-                      return !(record.type === "function_call" && typeof record.name === "string" && !shouldExposeToolCall(record.name, clientToolNames))
-                    })
+                    response.output = output
+                      .filter((entry) => {
+                        if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return true
+                        const record = entry as Record<string, unknown>
+                        return !(record.type === "function_call" && typeof record.name === "string" && !shouldExposeToolCall(record.name, clientToolNames))
+                      })
+                      .map((entry) =>
+                        typeof entry === "object" && entry !== null && !Array.isArray(entry)
+                          ? exposeItemName(entry as Record<string, unknown>)
+                          : entry,
+                      )
                   }
                   sawTerminalEvent = true
                 } else if (event.type === "response.failed" || event.type === "error") {
                   sawTerminalEvent = true
                 }
-                push(frameEvent(event))
+                push(frameEvent(exposeUpstreamNames(event, clientToolNames)))
               }
               if (!sawTerminalEvent) {
                 push(frameEvent({
@@ -354,7 +423,9 @@ export async function handleResponsesRequest(
         "x-opencode-session-id": identity.sessionId,
         "x-session-affinity": identity.sessionId,
         "x-session-id": identity.sessionId,
-        "x-opencode-request": identity.requestId,
+        // The 2.0.29 client does NOT send x-opencode-request, and re-adding the
+        // header trips the free-tier gate (403). The msg_ id stays local-only.
+
         "x-opencode-client": OPENCODE_CLIENT,
         "x-opencode-project": OPENCODE_PROJECT_ID,
       },
@@ -526,14 +597,14 @@ export async function handleResponsesRequest(
                     delete rewritten.arguments
                     return rewritten
                   }
-                  return entry
+                  return exposeItemName(record)
                 })
             }
             sawTerminalEvent = true
           } else if (event.type === "response.failed" || event.type === "error") {
             sawTerminalEvent = true
           }
-          push(frameEvent(event))
+          push(frameEvent(exposeUpstreamNames(event, clientToolNames)))
         }
         if (!sawTerminalEvent) {
           // 客户端主动断开（超时/取消/平台回收）时 request.signal 已中止，

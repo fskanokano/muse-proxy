@@ -90,7 +90,7 @@ describe("edge function dispatch", () => {
     const body = (await res.json()) as { object: string; choices: Array<{ message: { content: string } }> }
     expect(body.object).toBe("chat.completion")
     expect(body.choices[0]!.message.content).toBe("pong")
-    expect(calls[0]!.url).toBe("https://opencode.ai/zen/v1/responses")
+    expect(calls[0]!.url).toBe("https://opencode.ai/inference/v1/responses")
   })
 
   it("routes /responses to the responses facade", async () => {
@@ -189,7 +189,7 @@ describe("edge function dispatch", () => {
     const init = calls[0]!.init!
     // The opencode free-tier fingerprint must survive the migration untouched.
     const headers = init.headers as Record<string, string>
-    expect(headers["user-agent"]).toBe("opencode/latest/2.0.28/cli")
+    expect(headers["user-agent"]).toBe("opencode/latest/2.0.29/cli")
     expect(headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
     expect(headers.authorization).toBe("Bearer public")
   })

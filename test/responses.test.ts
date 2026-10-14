@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { handleResponsesRequest, type ResponsesDependencies } from "../api/responses"
 import { normalizeResponsesRequest } from "../supabase/functions/muse-proxy/_lib/responses-lower.ts"
 import { MODEL_ID } from "../supabase/functions/muse-proxy/_lib/types.ts"
-import { OPENCODE_BUILTIN_TOOLS, STUB_BUILTIN_TOOL_DESCRIPTION } from "../supabase/functions/muse-proxy/_lib/tools.ts"
+import { OPENCODE_BUILTIN_TOOLS } from "../supabase/functions/muse-proxy/_lib/tools.ts"
 
 const ENV = { PROXY_API_KEY: "test-key" }
 const AUTH = { authorization: "Bearer test-key" }
@@ -210,30 +210,33 @@ describe("normalizeResponsesRequest", () => {
     expect("error" in noInput && noInput.error.code).toBe("missing_input")
   })
 
-  it("always sends the full builtin tool set with stubbed descriptions, then client tools; tool_choice is auto", () => {
+  it("always sends the full builtin tool set with its real definitions, then aliased client tools; tool_choice is auto", () => {
     const result = normalizeResponsesRequest({
       input: "hi",
       tools: [
         { type: "function", name: "my_tool", description: "mine", parameters: { type: "object", properties: {} } },
         // chat-nested shape tolerated
         { type: "function", function: { name: "nested", description: "nested tool", parameters: { type: "object" } } },
-        // builtin name from the client replaces the stub entry in place
-        { type: "function", name: "bash", description: "client fake bash", parameters: {} },
+        // a client tool under a reserved builtin name may no longer shadow it
+        // (the gate compares builtin definitions verbatim): it ships as
+        // `mp_<name>` and is mapped back when the call is raised.
+        { type: "function", name: "shell", description: "client fake shell", parameters: {} },
       ],
     })
     if ("error" in result) throw new Error("unexpected error")
     const tools = result.request.tools!
-    expect(tools).toHaveLength(OPENCODE_BUILTIN_TOOLS.length + 2)
+    expect(tools).toHaveLength(OPENCODE_BUILTIN_TOOLS.length + 3)
     for (const builtin of OPENCODE_BUILTIN_TOOLS) {
       const sent = tools.find((t) => t.name === builtin.name)!
-      if (builtin.name === "bash") {
-        expect(sent.description).toBe("client fake bash")
-      } else {
-        expect(sent.description).toBe(STUB_BUILTIN_TOOL_DESCRIPTION)
-      }
+      // 门槛会读内置工具的 description 与 parameters，必须原样下发。
+      expect(sent.description).toBe(builtin.description)
+      expect(sent.parameters).toEqual(builtin.parameters)
     }
-    expect(tools.at(-2)).toEqual({ type: "function", name: "my_tool", description: "mine", parameters: { type: "object", properties: {} } })
-    expect(tools.at(-1)!.name).toBe("nested")
+    expect(tools.at(-3)).toEqual({ type: "function", name: "my_tool", description: "mine", parameters: { type: "object", properties: {} } })
+    expect(tools.at(-2)!.name).toBe("nested")
+    expect(tools.at(-1)).toEqual({ type: "function", name: "mp_shell", description: "client fake shell", parameters: {} })
+    // the client's original name stays in the expose set
+    expect(result.clientToolNames.has("shell")).toBe(true)
     expect(result.request.tool_choice).toBe("auto")
   })
 
@@ -346,11 +349,12 @@ describe("responses endpoint integration", () => {
     // Fingerprint headers identical to the chat facade.
     const init = calls[0]!.init!
     const headers = init.headers as Record<string, string>
-    expect(calls[0]!.url).toBe("https://opencode.ai/zen/v1/responses")
+    expect(calls[0]!.url).toBe("https://opencode.ai/inference/v1/responses")
     expect(headers["user-agent"]).toContain("opencode/")
     expect(headers["x-opencode-client"]).toBe("cli")
     expect(headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
-    expect(headers["x-opencode-request"]).toMatch(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
+    // The shipped client sends no x-opencode-request; adding it back 403s.
+    expect(headers["x-opencode-request"]).toBeUndefined()
     expect(headers["x-opencode-project"]).toBe("global")
 
     // Upstream body contract.
@@ -499,6 +503,47 @@ describe("responses endpoint integration", () => {
     expect(payload).toEqual({ type: "response.output_text.delta", delta: "Hel" })
   })
 
+  it("streaming: the response.tools echo carries the client's own tools under their original names", async () => {
+    // Upstream echoes the full injected tool list (builtins verbatim + the
+    // client's tools, aliased when reserved). The client must only ever see its
+    // own tools back, under the names it declared.
+    const echoedTools = [
+      ...OPENCODE_BUILTIN_TOOLS,
+      { type: "function", name: "mp_shell", description: "client shell", parameters: { type: "object" } },
+      { type: "function", name: "my_tool", description: "mine", parameters: { type: "object" } },
+    ]
+    mockUpstream([
+      sseResponse([
+        { type: "response.created", response: { id: "resp_s1", tools: echoedTools } },
+        { type: "response.completed", response: { tools: echoedTools, usage: { input_tokens: 1, output_tokens: 1 } } },
+      ]),
+    ])
+
+    const res = await handleResponsesRequest(
+      post({
+        input: "hi",
+        stream: true,
+        tools: [
+          { type: "function", name: "shell", description: "client shell", parameters: { type: "object" } },
+          { type: "function", name: "my_tool", description: "mine", parameters: { type: "object" } },
+        ],
+      }),
+      ENV,
+    )
+    const frames = (await res.text()).split("\n\n").filter((block) => block.startsWith("event: "))
+    const echoed = frames
+      .map((frame) => JSON.parse(frame.split("\n")[1]!.slice("data: ".length)) as Record<string, unknown>)
+      .map((event) => (event.response as { tools?: Array<{ name: string }> } | undefined)?.tools)
+      .filter((tools): tools is Array<{ name: string }> => Array.isArray(tools))
+
+    expect(echoed).toHaveLength(2)
+    for (const tools of echoed) {
+      expect(tools.map((tool) => tool.name)).toEqual(["shell", "my_tool"])
+      expect(tools.find((tool) => tool.name === "shell")).toMatchObject({ description: "client shell" })
+    }
+    expect(JSON.stringify(echoed)).not.toContain("mp_shell")
+  })
+
   it("streaming: drops upstream ping keep-alive frames so response.completed stays terminal", async () => {
     mockUpstream([
       sseResponse([
@@ -614,7 +659,7 @@ describe("responses endpoint integration", () => {
       sseResponse([
         {
           type: "response.output_item.done",
-          item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "bash", arguments: '{"command":"x"}' },
+          item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "shell", arguments: '{"command":"x"}' },
         },
         {
           type: "response.output_item.done",
@@ -640,14 +685,14 @@ describe("responses endpoint integration", () => {
         {
           type: "response.output_item.added",
           output_index: 0,
-          item: { id: "fc_hidden", type: "function_call", status: "in_progress", name: "bash", call_id: "call_h", arguments: "" },
+          item: { id: "fc_hidden", type: "function_call", status: "in_progress", name: "shell", call_id: "call_h", arguments: "" },
         },
         { type: "response.function_call_arguments.delta", output_index: 0, item_id: "fc_hidden", delta: '{"co' },
-        { type: "response.function_call_arguments.done", output_index: 0, item_id: "fc_hidden", arguments: '{"co"}', name: "bash" },
+        { type: "response.function_call_arguments.done", output_index: 0, item_id: "fc_hidden", arguments: '{"co"}', name: "shell" },
         {
           type: "response.output_item.done",
           output_index: 0,
-          item: { id: "fc_hidden", type: "function_call", status: "completed", name: "bash", call_id: "call_h", arguments: '{"co"}' },
+          item: { id: "fc_hidden", type: "function_call", status: "completed", name: "shell", call_id: "call_h", arguments: '{"co"}' },
         },
         {
           type: "response.output_item.added",
@@ -665,7 +710,7 @@ describe("responses endpoint integration", () => {
     ])
     const res = await handleResponsesRequest(post({ input: "hi", stream: true }), ENV)
     const text = await res.text()
-    expect(text).not.toContain('"bash"')
+    expect(text).not.toContain('"shell"')
     expect(text).not.toContain("fc_hidden")
     expect(text).not.toContain('call_h')
     expect(text).toContain('"get_weather"')

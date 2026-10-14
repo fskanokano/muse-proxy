@@ -29,6 +29,9 @@ import * as http from "node:http"
 import { handleChatRequest } from "../api/chat"
 import { handleResponsesRequest } from "../api/responses"
 import { handleMessagesRequest } from "../api/messages"
+// Single source of truth: the builtin tool set the proxy actually sends to the
+// upstream (kept in sync with the captured CLI request in _lib/tools.ts).
+import { BUILTIN_TOOL_NAMES } from "../supabase/functions/muse-proxy/_lib/tools"
 
 const PORT = 8914
 const KEY = process.env.PROXY_API_KEY ?? "smoke-key"
@@ -197,7 +200,7 @@ function post(path: string, body: unknown, auth: Record<string, string> = { auth
 }
 
 const USER_ASK = "What is the weather report for Tokyo right now? Use the get_city_report tool, then tell me the temperature and the report id."
-const BUILTIN_TOOL_NAMES = new Set(["bash", "edit", "glob", "grep", "read", "skill", "task", "todowrite", "webfetch", "websearch", "write"])
+
 
 // ---------------------------------------------------------------------------
 // 1) Chat facade streaming tool loop

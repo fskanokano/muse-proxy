@@ -20,11 +20,11 @@ const OA_COMPAT_URL = "https://opencode.ai/zen/v1/chat/completions"
 const MODELS = process.argv.slice(2).length > 0 ? process.argv.slice(2) : ["space-bunny-free", "mimo-v2.6-flash-free"]
 
 import { identityForCall } from "../supabase/functions/muse-proxy/_lib/identity.ts"
-import { OPENCODE_BUILTIN_TOOLS, STUB_BUILTIN_TOOL_DESCRIPTION, appendClientTools } from "../supabase/functions/muse-proxy/_lib/tools.ts"
+import { OPENCODE_BUILTIN_TOOLS, appendClientTools } from "../supabase/functions/muse-proxy/_lib/tools.ts"
 
 const BUILTIN_CHAT_TOOLS = OPENCODE_BUILTIN_TOOLS.map((tool) => ({
   type: "function" as const,
-  function: { name: tool.name, description: STUB_BUILTIN_TOOL_DESCRIPTION, parameters: tool.parameters },
+  function: { name: tool.name, description: tool.description, parameters: tool.parameters },
 }))
 
 const CLIENT_TOOL = {
