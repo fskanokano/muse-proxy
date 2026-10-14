@@ -3,6 +3,7 @@
 // heartbeats, and non-stream aggregation.
 
 import { encodeReasoningDetails, type ReasoningItem } from "./reasoning.js"
+import { errorChunk } from "./errors.js"
 import { shouldExposeToolCall } from "./tools.js"
 import type { ChatChunk, ChatUsage, UpstreamEvent } from "./types.js"
 import { usageToChat } from "./usage.js"
@@ -18,12 +19,16 @@ export interface RaiserOptions {
 export interface Raiser {
   handle: (event: UpstreamEvent) => ChatChunk[]
   finish: () => ChatChunk[]
+  /** 上游是否给出过终端事件 (供调用方/测试判定截断) */
+  sawTerminal: () => boolean
 }
 
 interface RaiserState {
   toolCallCount: number
   sawToolCalls: boolean
   finished: boolean
+  /** completed/incomplete/failed/error 任一终端事件 (区分"干净收尾"与"上游半路 EOF") */
+  sawTerminal: boolean
 }
 
 const EMPTY_DELTA = {}
@@ -55,7 +60,7 @@ function chunk(
 }
 
 export function createRaiser(options: RaiserOptions): Raiser {
-  const state: RaiserState = { toolCallCount: 0, sawToolCalls: false, finished: false }
+  const state: RaiserState = { toolCallCount: 0, sawToolCalls: false, finished: false, sawTerminal: false }
   const clientToolNames = options.clientToolNames ?? new Set<string>()
   const emitFinish = (finishReason: string, usage?: ChatUsage): ChatChunk[] => {
     if (state.finished) return []
@@ -131,17 +136,20 @@ export function createRaiser(options: RaiserOptions): Raiser {
       }
 
       case "response.completed": {
+        state.sawTerminal = true
         const usage = usageToChat(event.response?.usage)
         return emitFinish(state.sawToolCalls ? "tool_calls" : "stop", usage)
       }
 
       case "response.incomplete": {
+        state.sawTerminal = true
         const usage = usageToChat(event.response?.usage)
         return emitFinish("length", usage)
       }
 
       case "response.failed":
       case "error": {
+        state.sawTerminal = true
         const code = event.code ?? event.response?.error?.code ?? undefined
         const message = event.message ?? event.response?.error?.message ?? "unknown upstream error"
         const text = code ? `${code}: ${message}` : message
@@ -156,5 +164,17 @@ export function createRaiser(options: RaiserOptions): Raiser {
     }
   }
 
-  return { handle, finish: () => emitFinish(state.sawToolCalls ? "tool_calls" : "stop") }
+  const finish = (): ChatChunk[] => {
+    if (state.finished) return []
+    state.finished = true
+    // 上游半路 EOF (无终端事件): 绝不能伪装成干净 stop, 否则客户端会把半截
+    // 内容当完整答案 ("一轮结束但需求没完成"的静默形态)。改发 error 内容块
+    // (与行内上游错误同格式), 调用方照常收尾 [DONE]。
+    if (!state.sawTerminal) {
+      return [errorChunk(options.id, options.created, options.model, "upstream closed the stream before a terminal event")]
+    }
+    return emitFinish(state.sawToolCalls ? "tool_calls" : "stop")
+  }
+
+  return { handle, finish, sawTerminal: () => state.sawTerminal }
 }
