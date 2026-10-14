@@ -14,16 +14,19 @@
 
 import { checkAuth } from "./_lib/auth.ts"
 import { identityForCall } from "./_lib/identity.ts"
+import { runGoalTurns, type GoalCtx } from "./_lib/goal.ts"
 import { MessageRaiser, type AnthropicEvent } from "./_lib/messages-raise.ts"
 import { lowerMessagesRequest } from "./_lib/messages-lower.ts"
 import { HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse.ts"
 import { shouldExposeToolCall } from "./_lib/tools.ts"
-import type { UpstreamEvent, UpstreamUsage } from "./_lib/types.ts"
-import { MODEL_ID, OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT, resolveModel } from "./_lib/types.ts"
+import type { UpstreamEvent, UpstreamInputItem, UpstreamUsage } from "./_lib/types.ts"
+import { OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT, resolveModel } from "./_lib/types.ts"
 import { handleOaCompatUpstream } from "./_lib/oa-compat.ts"
 
 export interface MessagesEnv {
   PROXY_API_KEY?: string
+  /** goal 自动续轮上限 (MP_GOAL_MAX_ROUNDS, 缺省 2, 0 = 与 muse 行为一致)。 */
+  goalMaxRounds?: number
 }
 
 export interface MessagesDependencies {
@@ -313,10 +316,9 @@ export async function handleMessagesRequest(
   }
 
   let upstream: Response
-  try {
-    // Identical opencode client header fingerprint as the other facades —
-    // the zen free tier gates on it regardless of which facade was used.
-    upstream = await fetchImpl(UPSTREAM_URL, {
+  // 上游 POST 闭包 (首轮与 goal 续轮/judge 共用, 指纹头与 body 原型唯一来源)。
+  const postUpstream = (body: Record<string, unknown>): Promise<Response> =>
+    fetchImpl(UPSTREAM_URL, {
       method: "POST",
       headers: {
         authorization: `Bearer ${UPSTREAM_API_KEY}`,
@@ -331,10 +333,14 @@ export async function handleMessagesRequest(
         "x-opencode-client": OPENCODE_CLIENT,
         "x-opencode-project": OPENCODE_PROJECT_ID,
       },
-      body: JSON.stringify(lowered.request),
+      body: JSON.stringify(body),
       // Propagate client disconnects so we stop billing upstream tokens.
       signal: request.signal,
     })
+  try {
+    // Identical opencode client header fingerprint as the other facades —
+    // the zen free tier gates on it regardless of which facade was used.
+    upstream = await postUpstream(lowered.request as unknown as Record<string, unknown>)
   } catch (error) {
     const message = error instanceof Error ? error.message : "network error"
     return anthropicError(502, "api_error", `failed to reach opencode zen: ${message}`)
@@ -350,7 +356,20 @@ export async function handleMessagesRequest(
     return upstreamErrorToAnthropic(upstream.status, upstreamJson)
   }
 
-  const events: AsyncGenerator<Record<string, unknown> | "done"> = parseUpstreamSse(upstream.body)
+  const rawEvents: AsyncGenerator<Record<string, unknown> | "done"> = parseUpstreamSse(upstream.body)
+  // goal 实验模型: 无工具干净收尾时过 judge, 判未完成则自动续轮 (见 _lib/goal.ts)。
+  // 非 goal 模型保持逐字节旧行为。
+  const events: AsyncGenerator<Record<string, unknown> | "done"> = resolved.isGoal
+    ? runGoalTurns(rawEvents, {
+        model: resolved,
+        baseBody: lowered.request as unknown as Record<string, unknown>,
+        input: lowered.request.input,
+        tools: lowered.request.tools ?? [],
+        maxRounds: env.goalMaxRounds ?? 2,
+        identity,
+        postUpstream,
+      } satisfies GoalCtx)
+    : rawEvents
 
   // ------------------------------------------------------------------
   // Non-streaming: aggregate internally, respond with one JSON message.
@@ -372,7 +391,7 @@ export async function handleMessagesRequest(
       // truncated, so never report it as a complete message.
       return anthropicError(502, "api_error", "upstream closed the stream before a terminal response event")
     }
-    return new Response(JSON.stringify(builder.build(messageId, MODEL_ID)), {
+    return new Response(JSON.stringify(builder.build(messageId, resolved.id)), {
       status: 200,
       headers: { "content-type": "application/json" },
     })
@@ -384,7 +403,7 @@ export async function handleMessagesRequest(
   // ends with message_stop, per the Anthropic contract).
   // ------------------------------------------------------------------
   const encoder = new TextEncoder()
-  const raiser = new MessageRaiser({ messageId, model: MODEL_ID, clientToolNames: lowered.clientToolNames, toolChoice: clientToolChoice })
+  const raiser = new MessageRaiser({ messageId, model: resolved.id, clientToolNames: lowered.clientToolNames, toolChoice: clientToolChoice })
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {

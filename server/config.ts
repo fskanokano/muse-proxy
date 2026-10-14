@@ -11,6 +11,12 @@ export const env = {
   adminPassword: process.env.MP_ADMIN_PASSWORD || "",
   /** 网关子系统内部钥 (与网关 MP_INTERNAL_KEY 一致; 为空则内部通道关闭)。 */
   internalKey: process.env.MP_INTERNAL_KEY || "",
+  /** goal 自动续轮上限 (0-10, 缺省 2, 0 = 与 muse 行为完全一致)。 */
+  goalMaxRounds: (() => {
+    const n = Number(process.env.MP_GOAL_MAX_ROUNDS ?? "2");
+    if (!Number.isInteger(n) || n < 0) return 2;
+    return Math.min(n, 10);
+  })(),
   dataDir: process.env.MP_DATA_DIR || path.resolve(process.cwd(), "data"),
   /** 管理后台静态目录 (admin-web 构建产物; 为空则自动探测)。 */
   staticDirOverride: process.env.MP_STATIC_DIR || "",

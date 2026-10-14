@@ -348,7 +348,7 @@ const server = http.createServer((req, res) => {
       });
       let webRes: Response;
       try {
-        webRes = await handleRequest(request, { PROXY_API_KEY: env.proxyApiKey }, { fetchImpl });
+        webRes = await handleRequest(request, { PROXY_API_KEY: env.proxyApiKey, goalMaxRounds: env.goalMaxRounds }, { fetchImpl });
       } catch (e) {
         if (!res.writableEnded) json(res, 500, { error: `handler failed: ${(e as Error)?.message ?? e}` });
         finished = true;
