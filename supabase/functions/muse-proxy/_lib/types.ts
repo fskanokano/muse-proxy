@@ -59,6 +59,8 @@ export const MODEL_MUSE = "muse-spark-1.3-contributor-free"
 export const MODEL_MIMO = "mimo-v2.6-flash-free"
 export const MODEL_SPACE_BUNNY = "space-bunny-free"
 export const MODEL_STEP5 = "step-5-preview-free"
+/** 实验模型: 与 muse 同一上游, 但启用代理层 goal 自动续轮 (见 _lib/goal.ts)。 */
+export const MODEL_GOAL = "muse-spark-1.3-contributor-goal"
 
 export type UpstreamFormat = "responses" | "oa-compat"
 
@@ -75,6 +77,10 @@ export interface ModelInfo {
   efforts: readonly string[]
   /** Convenience: keep muse defaults working via the old MODEL_ID constant. */
   isMuse?: boolean
+  /** goal 实验模型标记: 上游仍走 muse, 但门面为其启用自动续轮。 */
+  isGoal?: boolean
+  /** 发往上游的模型 id (缺省用 id 自身; goal 模型填 muse id, 上游不认识 goal id)。 */
+  upstreamId?: string
 }
 
 // Effort levels come from the models.opencode.ai catalog (reasoning_options)
@@ -138,12 +144,28 @@ const STEP5_INFO: ModelInfo = {
   maxOutputTokens: 32_000,
   efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
 }
+// 实验模型: 与 muse 同一上游 (upstream responses 格式, 32K 输出),
+// 区别仅在于门面为其启用 goal 自动续轮: 无工具干净收尾时先过 judge,
+// 判未完成则自动续一轮 (cap 见 MP_GOAL_MAX_ROUNDS)。上游永远收到 muse id。
+const GOAL_INFO: ModelInfo = {
+  id: MODEL_GOAL,
+  name: "Muse Spark 1.3 Contributor Goal (auto-continue experiment)",
+  upstream: "responses",
+  upstreamId: MODEL_MUSE,
+  description:
+    "Same upstream as muse-spark-1.3-contributor-free, plus proxy-level goal check: a clean tool-less turn is judged (by the same model) and auto-continued when incomplete. Experimental; usage only reflects the final turn.",
+  contextWindow: 1_048_576,
+  maxOutputTokens: 32_000,
+  efforts: REASONING_EFFORTS,
+  isGoal: true,
+}
 
 export const MODELS: Record<string, ModelInfo> = {
   [MODEL_MUSE]: MUSE_INFO,
   [MODEL_MIMO]: MIMO_INFO,
   [MODEL_SPACE_BUNNY]: SPACE_BUNNY_INFO,
   [MODEL_STEP5]: STEP5_INFO,
+  [MODEL_GOAL]: GOAL_INFO,
 }
 
 export const DEFAULT_MODEL_ID = MODEL_MUSE

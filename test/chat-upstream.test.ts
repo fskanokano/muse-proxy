@@ -198,13 +198,14 @@ describe("/v1/models catalog", () => {
   const created = 1_758_000_000
   const list = modelsList(created)
 
-  it("lists all four free models with reasoning metadata", () => {
+  it("lists all free models with reasoning metadata", () => {
     const ids = list.data.map((m: { id: string }) => m.id)
     expect(ids).toEqual([
       "muse-spark-1.3-contributor-free",
       "mimo-v2.6-flash-free",
       "space-bunny-free",
       "step-5-preview-free",
+      "muse-spark-1.3-contributor-goal",
     ])
     for (const entry of list.data) {
       expect(entry.object).toBe("model")
@@ -223,6 +224,8 @@ describe("/v1/models catalog", () => {
     expect(byId.get("muse-spark-1.3-contributor-free")!.reasoning_levels).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
     expect(byId.get("step-5-preview-free")!.reasoning_levels).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"])
     expect(byId.get("step-5-preview-free")!.reasoning).toBe(true)
+    expect(byId.get("muse-spark-1.3-contributor-goal")!.reasoning_levels).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+    expect(byId.get("muse-spark-1.3-contributor-goal")!.reasoning).toBe(true)
   })
 })
 

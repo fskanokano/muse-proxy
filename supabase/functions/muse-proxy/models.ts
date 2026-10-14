@@ -26,6 +26,7 @@ const REASONING_MODELS = new Set([
   "mimo-v2.6-flash-free",
   "space-bunny-free",
   "step-5-preview-free",
+  "muse-spark-1.3-contributor-goal",
 ])
 
 export function modelsList(created: number) {

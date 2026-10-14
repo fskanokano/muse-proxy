@@ -6,19 +6,22 @@
 
 import { checkAuth } from "./_lib/auth.ts"
 import { errorChunk, jsonError, upstreamErrorToOpenAI } from "./_lib/errors.ts"
+import { runGoalTurns, type GoalCtx } from "./_lib/goal.ts"
 import { identityForCall } from "./_lib/identity.ts"
 import { lowerRequest } from "./_lib/lower.ts"
 import { createRaiser } from "./_lib/raise.ts"
 import { chunkToSse, DONE_LINE, HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse.ts"
 import { shouldExposeToolCall } from "./_lib/tools.ts"
-import type { ChatToolCall, ChatUsage, UpstreamEvent } from "./_lib/types.ts"
+import type { ChatToolCall, ChatUsage, UpstreamEvent, UpstreamInputItem } from "./_lib/types.ts"
 import { resolveModel } from "./_lib/types.ts"
 import { usageToChat } from "./_lib/usage.ts"
 import { handleOaCompatUpstream } from "./_lib/oa-compat.ts"
-import { MODEL_ID, MODEL_NAME, OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT } from "./_lib/types.ts"
+import { MODEL_NAME, OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT } from "./_lib/types.ts"
 
 export interface ChatEnv {
   PROXY_API_KEY?: string
+  /** goal 自动续轮上限 (MP_GOAL_MAX_ROUNDS, 缺省 2, 0 = 与 muse 行为一致)。 */
+  goalMaxRounds?: number
 }
 
 export interface ChatDependencies {
@@ -262,13 +265,9 @@ export async function handleChatRequest(
   }
 
   let upstream: Response
-  try {
-    // Full opencode client header fingerprint (captured from a real 2.0.28 CLI
-    // request): version-scoped UA, client flag, opencode-shaped session ids,
-    // project key. The zen free tier rejects any deviation with 403
-    // FreeTierError. The current client stamps the same session id under four
-    // names (session / session-id / affinity / x-session-id) — mirrored here.
-    upstream = await fetchImpl(UPSTREAM_URL, {
+  // 上游 POST 闭包 (首轮与 goal 续轮/judge 共用, 指纹头与 body 原型唯一来源)。
+  const postUpstream = (body: Record<string, unknown>): Promise<Response> =>
+    fetchImpl(UPSTREAM_URL, {
       method: "POST",
       headers: {
         authorization: `Bearer ${UPSTREAM_API_KEY}`,
@@ -288,10 +287,17 @@ export async function handleChatRequest(
         "x-opencode-client": OPENCODE_CLIENT,
         "x-opencode-project": OPENCODE_PROJECT_ID,
       },
-      body: JSON.stringify(lowered.request),
+      body: JSON.stringify(body),
       // Propagate client disconnects so we stop billing upstream tokens.
       signal: request.signal,
     })
+  try {
+    // Full opencode client header fingerprint (captured from a real 2.0.28 CLI
+    // request): version-scoped UA, client flag, opencode-shaped session ids,
+    // project key. The zen free tier rejects any deviation with 403
+    // FreeTierError. The current client stamps the same session id under four
+    // names (session / session-id / affinity / x-session-id) — mirrored here.
+    upstream = await postUpstream(lowered.request as unknown as Record<string, unknown>)
   } catch (error) {
     const message = error instanceof Error ? error.message : "network error"
     return jsonResponse(jsonError(502, `failed to reach opencode zen: ${message}`, "upstream_unreachable", "api_error"))
@@ -307,7 +313,20 @@ export async function handleChatRequest(
     return jsonResponse(upstreamErrorToOpenAI(upstream.status, upstreamJson))
   }
 
-  const events: AsyncGenerator<Record<string, unknown> | "done"> = parseUpstreamSse(upstream.body)
+  const rawEvents: AsyncGenerator<Record<string, unknown> | "done"> = parseUpstreamSse(upstream.body)
+  // goal 实验模型: 无工具干净收尾时过 judge, 判未完成则自动续轮 (见 _lib/goal.ts)。
+  // 非 goal 模型保持逐字节旧行为。
+  const events: AsyncGenerator<Record<string, unknown> | "done"> = resolved.isGoal
+    ? runGoalTurns(rawEvents, {
+        model: resolved,
+        baseBody: lowered.request as unknown as Record<string, unknown>,
+        input: lowered.request.input,
+        tools: lowered.request.tools ?? [],
+        maxRounds: env.goalMaxRounds ?? 2,
+        identity,
+        postUpstream,
+      } satisfies GoalCtx)
+    : rawEvents
 
   // ------------------------------------------------------------------
   // Non-streaming: aggregate internally, respond with one JSON object.
@@ -323,7 +342,7 @@ export async function handleChatRequest(
     if (!builder.sawTerminalEvent) {
       return jsonResponse(jsonError(502, "upstream closed the stream before a terminal response event", "upstream_stream_truncated", "api_error"))
     }
-    return new Response(JSON.stringify(builder.build(completionId, created, MODEL_ID)), {
+    return new Response(JSON.stringify(builder.build(completionId, created, resolved.id)), {
       status: 200,
       headers: { "content-type": "application/json" },
     })
@@ -333,7 +352,7 @@ export async function handleChatRequest(
   // Streaming: raise each upstream event into chat chunks over SSE.
   // ------------------------------------------------------------------
   const encoder = new TextEncoder()
-  const raiser = createRaiser({ id: completionId, created, model: MODEL_ID, clientToolNames: lowered.clientToolNames, toolChoice: clientToolChoice })
+  const raiser = createRaiser({ id: completionId, created, model: resolved.id, clientToolNames: lowered.clientToolNames, toolChoice: clientToolChoice })
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -352,7 +371,7 @@ export async function handleChatRequest(
           id: completionId,
           object: "chat.completion.chunk",
           created,
-          model: MODEL_ID,
+          model: resolved.id,
           choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
         }))
 
@@ -368,7 +387,7 @@ export async function handleChatRequest(
       } catch (error) {
         // Mid-stream failure: surface an OpenAI-ish error chunk, then close.
         const message = error instanceof Error ? error.message : "stream interrupted"
-        push(chunkToSse(errorChunk(completionId, created, MODEL_ID, message)))
+        push(chunkToSse(errorChunk(completionId, created, resolved.id, message)))
         push(DONE_LINE)
       } finally {
         clearInterval(heartbeat)

@@ -18,12 +18,15 @@ import { identityForCall } from "./_lib/identity.ts"
 import { normalizeResponsesRequest } from "./_lib/responses-lower.ts"
 import { HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse.ts"
 import { shouldExposeToolCall } from "./_lib/tools.ts"
-import type { UpstreamEvent, UpstreamUsage } from "./_lib/types.ts"
+import type { UpstreamEvent, UpstreamInputItem, UpstreamUsage } from "./_lib/types.ts"
 import { DEFAULT_REASONING_EFFORT, MODEL_ID, OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT, resolveModel } from "./_lib/types.ts"
+import { runGoalTurns, type GoalCtx } from "./_lib/goal.ts"
 import { handleOaCompatUpstream } from "./_lib/oa-compat.ts"
 
 export interface ResponsesEnv {
   PROXY_API_KEY?: string
+  /** goal 自动续轮上限 (MP_GOAL_MAX_ROUNDS, 缺省 2, 0 = 与 muse 行为一致)。 */
+  goalMaxRounds?: number
 }
 
 export interface ResponsesDependencies {
@@ -137,13 +140,13 @@ export class ResponseBuilder {
     }
   }
 
-  build(fallbackId: string, createdAt: number, echo: Record<string, unknown>): Record<string, unknown> {
+  build(fallbackId: string, createdAt: number, echo: Record<string, unknown>, modelId?: string): Record<string, unknown> {
     const body: Record<string, unknown> = {
       id: this.upstreamResponseId ?? fallbackId,
       object: "response",
       created_at: createdAt,
       status: this.status,
-      model: MODEL_ID,
+      model: modelId ?? MODEL_ID,
       output: this.output,
       output_text: this.outputText,
       error: this.error,
@@ -240,7 +243,7 @@ export async function handleResponsesRequest(
             tool_choice: "auto",
             reasoning: { effort: normalized.request.reasoning?.effort ?? DEFAULT_REASONING_EFFORT, summary: "auto" },
           }
-          return new Response(JSON.stringify(builder.build(responseId, createdAt, echo)), {
+          return new Response(JSON.stringify(builder.build(responseId, createdAt, echo, resolved.id)), {
             status: 200,
             headers: { "content-type": "application/json" },
           })
@@ -340,10 +343,9 @@ export async function handleResponsesRequest(
   }
 
   let upstream: Response
-  try {
-    // Identical opencode client header fingerprint as api/chat.ts — the zen
-    // free tier gates on it regardless of which facade the client used.
-    upstream = await fetchImpl(UPSTREAM_URL, {
+  // 上游 POST 闭包 (首轮与 goal 续轮/judge 共用, 指纹头与 body 原型唯一来源)。
+  const postUpstream = (body: Record<string, unknown>): Promise<Response> =>
+    fetchImpl(UPSTREAM_URL, {
       method: "POST",
       headers: {
         authorization: `Bearer ${UPSTREAM_API_KEY}`,
@@ -358,10 +360,14 @@ export async function handleResponsesRequest(
         "x-opencode-client": OPENCODE_CLIENT,
         "x-opencode-project": OPENCODE_PROJECT_ID,
       },
-      body: JSON.stringify(normalized.request),
+      body: JSON.stringify(body),
       // Propagate client disconnects so we stop billing upstream tokens.
       signal: request.signal,
     })
+  try {
+    // Identical opencode client header fingerprint as api/chat.ts — the zen
+    // free tier gates on it regardless of which facade the client used.
+    upstream = await postUpstream(normalized.request as unknown as Record<string, unknown>)
   } catch (error) {
     const message = error instanceof Error ? error.message : "network error"
     return jsonResponse(jsonError(502, `failed to reach opencode zen: ${message}`, "upstream_unreachable", "api_error"))
@@ -377,7 +383,20 @@ export async function handleResponsesRequest(
     return jsonResponse(upstreamErrorToOpenAI(upstream.status, upstreamJson))
   }
 
-  const events: AsyncGenerator<Record<string, unknown> | "done"> = parseUpstreamSse(upstream.body)
+  const rawEvents: AsyncGenerator<Record<string, unknown> | "done"> = parseUpstreamSse(upstream.body)
+  // goal 实验模型: 无工具干净收尾时过 judge, 判未完成则自动续轮 (见 _lib/goal.ts)。
+  // 非 goal 模型保持逐字节旧行为。
+  const events: AsyncGenerator<Record<string, unknown> | "done"> = resolved.isGoal
+    ? runGoalTurns(rawEvents, {
+        model: resolved,
+        baseBody: normalized.request as unknown as Record<string, unknown>,
+        input: normalized.request.input,
+        tools: normalized.request.tools ?? [],
+        maxRounds: env.goalMaxRounds ?? 2,
+        identity,
+        postUpstream,
+      } satisfies GoalCtx)
+    : rawEvents
 
   // ------------------------------------------------------------------
   // Non-streaming: aggregate internally, respond with one JSON object.
@@ -406,7 +425,7 @@ export async function handleResponsesRequest(
       tool_choice: "auto",
       reasoning: { effort: normalized.request.reasoning?.effort ?? DEFAULT_REASONING_EFFORT, summary: "auto" },
     }
-    return new Response(JSON.stringify(builder.build(responseId, createdAt, echo)), {
+    return new Response(JSON.stringify(builder.build(responseId, createdAt, echo, resolved.id)), {
       status: 200,
       headers: { "content-type": "application/json" },
     })
