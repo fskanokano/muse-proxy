@@ -112,7 +112,7 @@ bun run serve:functions # 官方方式,需要 Docker
 ```bash
 bun run typecheck       # tsc:api/ test/ scripts/ + supabase/functions/muse-proxy
 bun run typecheck:edge  # deno check:index.ts / router.ts / serve-edge.ts
-bun run test            # 200 个单元/集成测试(mock 上游,无需联网)
+bun run test            # 214 个单元/集成测试(mock 上游,无需联网)
 bun run smoke:edge      # 真实上游+真实 HTTP:平台层 34 检查 + 3 模型 × 3 门面 × 6 项(需先 serve:edge 或 serve:fake)
 bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印原文(同上需先启动服务)
 ```
@@ -528,7 +528,7 @@ bun run smoke:newmodels # 114/114:3 模型 × 3 门面 + 工具回合 + 记忆 +
 验证:
 
 ```bash
-bun run test      # 200/200(test/tools.test.ts 钉住别名原语,test/alias-downlink.test.ts 钉住三门面回环)
+bun run test      # 214/214(test/tools.test.ts 钉住别名原语,test/alias-downlink.test.ts 钉住三门面回环)
 bun run typecheck # tsc --noEmit 通过
 ```
 
