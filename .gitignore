@@ -5,3 +5,4 @@ node_modules/
 .env.local
 # Supabase CLI scratch dir (version pins, deploy metadata)
 supabase/.temp/
+data/
