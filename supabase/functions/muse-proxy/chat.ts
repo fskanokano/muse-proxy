@@ -55,6 +55,8 @@ class CompletionBuilder {
   usage: ChatUsage | undefined
   clientToolNames: ReadonlySet<string> = new Set<string>()
   toolChoice: unknown = undefined
+  /** completed/incomplete/failed/error 任一终端事件 (无则为上游半路 EOF, 禁止当完整答案返回) */
+  sawTerminalEvent = false
 
   addEvent(event: UpstreamEvent) {
     if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
@@ -81,16 +83,19 @@ class CompletionBuilder {
       return
     }
     if (event.type === "response.completed") {
+      this.sawTerminalEvent = true
       this.finishReason = this.toolCalls.length > 0 ? "tool_calls" : "stop"
       this.usage = usageToChat(event.response?.usage)
       return
     }
     if (event.type === "response.incomplete") {
+      this.sawTerminalEvent = true
       this.finishReason = "length"
       this.usage = usageToChat(event.response?.usage)
       return
     }
     if (event.type === "error" || event.type === "response.failed") {
+      this.sawTerminalEvent = true
       const code = event.code ?? event.response?.error?.code ?? undefined
       const message = event.message ?? event.response?.error?.message ?? "unknown upstream error"
       this.content += `[muse-proxy upstream error] ${code ? `${code}: ` : ""}${message}`
@@ -186,6 +191,9 @@ export async function handleChatRequest(
           for await (const event of events) {
             if (event === "done") break
             builder.addEvent(event as unknown as UpstreamEvent)
+          }
+          if (!builder.sawTerminalEvent) {
+            return jsonResponse(jsonError(502, "upstream closed the stream before a terminal response event", "upstream_stream_truncated", "api_error"))
           }
           return new Response(JSON.stringify(builder.build(completionId, created, resolved.id)), {
             status: 200,
@@ -311,6 +319,9 @@ export async function handleChatRequest(
     for await (const event of events) {
       if (event === "done") break
       builder.addEvent(event as unknown as UpstreamEvent)
+    }
+    if (!builder.sawTerminalEvent) {
+      return jsonResponse(jsonError(502, "upstream closed the stream before a terminal response event", "upstream_stream_truncated", "api_error"))
     }
     return new Response(JSON.stringify(builder.build(completionId, created, MODEL_ID)), {
       status: 200,
