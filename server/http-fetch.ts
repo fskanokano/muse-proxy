@@ -82,6 +82,19 @@ export function nodeHttpFetch(input: string, init: RequestInit = {}, egressIp?: 
   const url = new URL(input);
   const method = (init.method ?? "GET").toUpperCase();
   const headers = toNodeHeaders(init.headers);
+  // 与其他所有路径 (undici/Deno/nginx直连) 逐字节对齐的两处修正:
+  // 1. accept-encoding 显式声明 identity: 本层不做解压, 若上游回 gzip,
+  //    handler 的 json()/SSE 解析会直接吃到二进制 (静默丢帧/解析失败)。
+  //    undici 与 Deno 会自动声明 gzip 并解压, 唯独本层此前两头不靠。
+  // 2. 已知长度的 body 透传 content-length (此前一律 chunked):
+  //    部分边缘对 chunked 与定长的处理路径不同 (缓冲/缓存/指纹),
+  //    定长与直接 POST 完全等价, 消除最后一个传输层变量。
+  if (headers["accept-encoding"] === undefined) headers["accept-encoding"] = "identity";
+  const body = init.body as BodyInit | null | undefined;
+  if (headers["content-length"] === undefined && (typeof body === "string" || Buffer.isBuffer(body) || body instanceof Uint8Array)) {
+    const buf = typeof body === "string" ? Buffer.from(body) : Buffer.isBuffer(body) ? body : Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+    headers["content-length"] = String(buf.length);
+  }
   const mod = url.protocol === "https:" ? https : http;
   const signal = init.signal as AbortSignal | undefined;
 

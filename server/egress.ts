@@ -59,6 +59,11 @@ function isIpv4(s: string): boolean {
   return true;
 }
 
+/** 自然排序比较 (egress1 < egress2 < ... < egress10, 纯字符串会把 10 排到 2 前面) */
+export function naturalNameCmp(a: string, b: string): number {
+  return String(a).localeCompare(String(b), "en", { numeric: true });
+}
+
 /** 同步发现 (纯本地命令, 无网络, 可高频调用; 公网探测走异步缓存)。 */
 export function discoverSync(): Discovery {
   const names = readTableNames();
@@ -97,7 +102,7 @@ export function discoverSync(): Discovery {
     const cached = probeCache.get(ip);
     secondaries.push({ ip, name: /^[\w.-]{1,64}$/.test(table) ? table : "unknown", public_ip: cached?.publicIp ?? "", usable });
   }
-  secondaries.sort((a, b) => (a.name < b.name ? -1 : 1));
+  secondaries.sort((a, b) => naturalNameCmp(a.name, b.name));
   const defCached = probeCache.get("");
   return {
     def: defSrc && isIpv4(defSrc) ? { ip: defSrc, name: "main", public_ip: defCached?.publicIp ?? "" } : null,
@@ -134,6 +139,14 @@ export async function refreshPublicIps(ips: string[]): Promise<void> {
   } finally {
     probing = false;
   }
+}
+
+/** 该源是否需要(重新)探测: 从未探过, 或上次失败已超 15 分钟 (成功的不重复打)。 */
+export function needsProbe(src: string): boolean {
+  const c = probeCache.get(src);
+  if (!c) return true;
+  if (c.publicIp) return false;
+  return Date.now() - c.at > 15 * 60_000;
 }
 
 /** 底层绑定 fetch (node:http 实现, 见 http-fetch.ts; 与全局 fetch 同签名)。 */

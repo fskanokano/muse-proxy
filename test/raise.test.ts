@@ -108,10 +108,12 @@ describe("raise: tool calls", () => {
       },
     ])
 
-    const finish = r.finish()
-    expect(finish).toHaveLength(1)
-    expect(finish[0]!.choices[0]!.finish_reason).toBe("tool_calls")
-    expect(finish[0]!.choices[0]!.delta).toEqual({})
+    // 真实上游契约: 工具条目后必有终端事件才算干净收尾, 否则 finish() 报截断。
+    const doneChunks = r.handle({ type: "response.completed", response: { usage: null } })
+    expect(doneChunks).toHaveLength(1)
+    expect(doneChunks[0]!.choices[0]!.finish_reason).toBe("tool_calls")
+    expect(doneChunks[0]!.choices[0]!.delta).toEqual({})
+    expect(r.finish()).toHaveLength(0)
   })
 
   it("increments tool_call index per call", () => {
@@ -193,5 +195,33 @@ describe("raise: completion", () => {
       response: { error: { code: "rate_limit", message: "slow down" } },
     })
     expect(chunks[0]!.choices[0]!.delta.content).toContain("slow down")
+  })
+})
+
+describe("raise: truncation guard", () => {
+  it("finish() without any terminal event emits an error chunk, not a clean stop", () => {
+    const r = raiser()
+    r.handle({ type: "response.output_text.delta", delta: "half-baked" })
+    expect(r.sawTerminal()).toBe(false)
+    const out = r.finish()
+    expect(out).toHaveLength(1)
+    expect(out[0]!.choices[0]!.finish_reason).toBeNull()
+    expect(out[0]!.choices[0]!.delta.content).toContain("upstream closed the stream")
+  })
+
+  it("finish() after response.completed stays a clean stop", () => {
+    const r = raiser()
+    r.handle({ type: "response.output_text.delta", delta: "full" })
+    const doneChunks = r.handle({ type: "response.completed", response: { usage: null } })
+    expect(r.sawTerminal()).toBe(true)
+    expect(doneChunks[0]!.choices[0]!.finish_reason).toBe("stop")
+    expect(r.finish()).toHaveLength(0)
+  })
+
+  it("finish() is idempotent after truncation", () => {
+    const r = raiser()
+    const first = r.finish()
+    expect(first).toHaveLength(1)
+    expect(r.finish()).toHaveLength(0)
   })
 })

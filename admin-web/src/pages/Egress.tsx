@@ -28,7 +28,9 @@ export default function Egress() {
     void load();
   }, [load]);
 
-  const usable = (st?.secondaries ?? []).filter((x) => x.usable).map((x) => x.ip);
+  /** 副出口按表名自然排序 (egress1 < egress2 < ... < egress10) */
+  const ordered = (st?.secondaries ?? []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name), "en", { numeric: true }));
+  const usable = ordered.filter((x) => x.usable).map((x) => x.ip);
   const effective = selected.length ? usable.filter((ip) => selected.includes(ip)) : usable;
 
   const toggle = (ip: string) => {
@@ -115,7 +117,7 @@ export default function Egress() {
             </div>
           )}
           {(st?.secondaries ?? []).length === 0 && <p className="text-[12px] text-muted-foreground">暂无发现的副出口 IP。</p>}
-          {(st?.secondaries ?? []).map((e) => {
+          {ordered.map((e) => {
             const on = effective.includes(e.ip);
             return (
               <div key={e.ip} className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2">

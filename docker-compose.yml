@@ -20,11 +20,14 @@ services:
       - PROXY_API_KEY=${PROXY_API_KEY:-}
       - MP_ADMIN_PASSWORD=${MP_ADMIN_PASSWORD:-}
       - MP_INTERNAL_KEY=${MP_INTERNAL_KEY:-}
+      # goal 自动续轮上限 (0-10, 缺省 2; 0 = goal 模型与 muse 行为完全一致)
+      - MP_GOAL_MAX_ROUNDS=${MP_GOAL_MAX_ROUNDS:-2}
       - MP_DATA_DIR=/data
     volumes:
       - ./data:/data
-      # 宿主机策略路由表名映射 (副出口名字即表名, 如 egress91)
-      - /etc/iproute2/rt_tables:/etc/iproute2/rt_tables:ro
+      # 宿主机策略路由表名映射 (副出口名字即表名; 挂整个目录:
+      # 单文件挂载会在编辑器原子改写后指向旧 inode, 容器永远看到旧表名)
+      - /etc/iproute2:/etc/iproute2:ro
     restart: unless-stopped
     logging:
       driver: json-file
