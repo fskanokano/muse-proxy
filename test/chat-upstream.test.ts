@@ -205,6 +205,7 @@ describe("/v1/models catalog", () => {
       "mimo-v2.6-flash-free",
       "space-bunny-free",
       "step-5-preview-free",
+      "muse-spark-1.3-contributor-goal",
     ])
     for (const entry of list.data) {
       expect(entry.object).toBe("model")
