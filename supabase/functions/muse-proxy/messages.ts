@@ -25,7 +25,7 @@ import { handleOaCompatUpstream } from "./_lib/oa-compat.ts"
 
 export interface MessagesEnv {
   PROXY_API_KEY?: string
-  /** goal 自动续轮上限 (MP_GOAL_MAX_ROUNDS, 缺省 2, 0 = 与 muse 行为一致)。 */
+  /** goal 自动续轮上限 (MP_GOAL_MAX_ROUNDS, 缺省 1000, 0 = 与 muse 行为一致)。 */
   goalMaxRounds?: number
 }
 
@@ -369,7 +369,7 @@ export async function handleMessagesRequest(
         baseBody: lowered.request as unknown as Record<string, unknown>,
         input: lowered.request.input,
         tools: lowered.request.tools ?? [],
-        maxRounds: env.goalMaxRounds ?? 2,
+        maxRounds: env.goalMaxRounds ?? 1000,
         identity,
         postUpstream,
       } satisfies GoalCtx)

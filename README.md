@@ -144,8 +144,8 @@ client ─▶ sse-gateway:8443/mp/* ─剥/mp─▶ mp:18091 ─┬─ /v1/*    
 - **后台管理**（风格对标 sse-gateway 后台）：`/admin/`（HashRouter），经网关访问时登录页另填网关边缘钥，
   后台 token 改走 `x-admin-key` 头（`Authorization` 让给网关）。
 - **goal 实验模型** `muse-spark-1.3-contributor-goal`：与 muse 同一上游，门面在"无工具干净收尾
-  且请求带 tools"时先过 judge（裁判即本模型自身），判未完成则自动续轮（默认最多 2 轮，
-  `MP_GOAL_MAX_ROUNDS` 可调 0-10，0 = 与 muse 完全一致）。中间终端事件不透传、只放行最终
+  且请求带 tools"时先过 judge（裁判即本模型自身），判未完成则自动续轮（默认最多 1000 轮，
+  `MP_GOAL_MAX_ROUNDS` 可调 0-1000，0 = 与 muse 完全一致）。中间终端事件不透传、只放行最终
   终端；usage 只反映最后一轮；judge/续轮失败一律 fail-closed 直接收尾（绝不死循环）。
   续轮与 judge 记录打到容器日志 `[goal]` 前缀。注意裁判即模型自身，有自证偏差，
   且续轮会重发完整历史（大上下文注意 token 成本）。

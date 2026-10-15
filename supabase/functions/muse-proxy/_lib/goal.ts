@@ -3,7 +3,7 @@
 // 触发条件 (必须同时满足, 缺一即原样放行):
 //  1. 上游以 response.completed 干净收尾 (incomplete/failed/error 照常透传, 不干预);
 //  2. 本轮零工具调用, 但请求里带了 tools (无 tools 的请求如标题生成天然豁免);
-//  3. 未超续轮上限 (MP_GOAL_MAX_ROUNDS, 默认 2, 0 = 与 muse 行为完全一致);
+//  3. 未超续轮上限 (MP_GOAL_MAX_ROUNDS, 默认 1000, 0 = 与 muse 行为完全一致);
 //  4. judge 判 CONTINUE (裁判即当前模型自身; 判 COMPLETE/判读失败/调用失败一律收尾)。
 //
 // 续轮做法: 原历史 + 本轮文本 assistant 项 + user nudge 项, 重新 POST 上游
@@ -14,7 +14,7 @@
 //  failed/error/incomplete 终端 -> 直接透传收尾; "done" 无终端 -> 收尾 (门面守卫兜底);
 //  有工具/无tools可供/超cap/judge COMPLETE(含一切失败) -> 放行收尾;
 //  每次 CONTINUE 消耗一轮 cap, cap 耗尽即收尾。单客户端请求的上游调用数
-//  上界 = 1 + cap*(judge + continuation), 默认 cap=2 即最多 5 次。
+//  上界 = 1 + cap*(judge + continuation), 默认 cap=1000 (实际受网关超时与成本约束先到)。
 
 import { parseUpstreamSse } from "./sse.ts";
 import {
@@ -38,7 +38,7 @@ export interface GoalCtx {
   /** 当前轮的上游 input (续轮在此基础上追加)。 */
   input: UpstreamInputItem[];
   tools: UpstreamTool[];
-  /** 最多续轮数 (MP_GOAL_MAX_ROUNDS, 0 = 与 muse 行为完全一致)。 */
+  /** 最多续轮数 (MP_GOAL_MAX_ROUNDS, 0-1000, 缺省 1000, 0 = 与 muse 行为完全一致)。 */
   maxRounds: number;
   identity: GoalIdentity;
   /** 发往上游 responses 端点的原始 POST (门面闭包, 自带指纹头/signal)。 */
@@ -197,7 +197,7 @@ export async function* runGoalTurns(
   first: AsyncGenerator<GoalEvent>,
   ctx: GoalCtx,
 ): AsyncGenerator<GoalEvent> {
-  const cap = Number.isInteger(ctx.maxRounds) && ctx.maxRounds >= 0 ? Math.min(ctx.maxRounds, 10) : 2;
+  const cap = Number.isInteger(ctx.maxRounds) && ctx.maxRounds >= 0 ? Math.min(ctx.maxRounds, 1000) : 1000;
   let input = ctx.input;
   let current: AsyncGenerator<GoalEvent> = first;
   let rounds = 0;
