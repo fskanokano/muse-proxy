@@ -9,26 +9,30 @@
 - **入站**:`POST /functions/v1/muse-proxy/chat/completions`(OpenAI `/v1/chat/completions` 兼容,支持流式 SSE 与聚合 JSON、工具调用、`reasoning_effort`)
 - **入站**:`POST /functions/v1/muse-proxy/responses`(OpenAI `/v1/responses` Responses API 规范,支持流式 SSE 与聚合 JSON、工具调用、加密思考回放,详见下文)
 - **入站**:`POST /functions/v1/muse-proxy/messages`(Anthropic `/v1/messages` Messages API 规范,支持流式 SSE 与聚合 JSON、工具调用、thinking 块,详见下文)
-- **出站**:按模型分格式路由(zen 边缘按格式路由,2026-09-24 探针确认):
-  - `muse-spark-1.3-contributor-free` → `POST https://opencode.ai/zen/v1/responses`(OpenAI Responses API + SSE)
-  - `mimo-v2.6-flash-free` → `POST https://opencode.ai/zen/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游直接 500)
-  - `space-bunny-free` → `POST https://opencode.ai/zen/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游 401 `ModelError: not supported for format openai`)
+- **出站**:按模型分格式路由(zen 边缘按格式路由,2026-09-24 起多轮探针确认;上游端点自 2026-10-14 从 `/zen/v1` 迁到 `/inference/v1`):
+  - `muse-spark-1.3-contributor-free` → `POST https://opencode.ai/inference/v1/responses`(OpenAI Responses API + SSE)
+  - `mimo-v2.6-flash-free` → `POST https://opencode.ai/inference/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游直接 500)
+  - `space-bunny-free` → `POST https://opencode.ai/inference/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游 401 `ModelError: not supported for format openai`)
+  - `step-5-preview-free` → `POST https://opencode.ai/inference/v1/chat/completions`(oa-compat,同 space-bunny)
+  - `deepseek-v4.1-flash-free` → `POST https://opencode.ai/inference/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游 400 `ModelProtocolUnsupported: Model does not support this protocol`,2026-10-16 探针)
 - **鉴权**:`Authorization: Bearer $PROXY_API_KEY` 或 `x-api-key: $PROXY_API_KEY`(三个端点共用同一鉴权逻辑)。**未设置 `PROXY_API_KEY` 环境变量时,所有端点一律返回 401(fail-closed),不存在开放模式**
 - **免费模型**:上游 API key 固定为字面量 `public`,匿名免费层按 IP 限额,无需注册
-- **模型路由**(`supabase/functions/muse-proxy/_lib/types.ts` 的 `resolveModel`):显式匹配 `mimo*`/`space-bunny*`/`muse*` 前缀,其余任意 model id 沿用历史行为回落 muse;三个端点对同一 model id 语义一致
+- **模型路由**(`supabase/functions/muse-proxy/_lib/types.ts` 的 `resolveModel`):显式匹配 `mimo*`/`deepseek*`/`space-bunny*`/`step-5*`/`muse*` 前缀与完整 id,其余任意 model id 沿用历史行为回落 muse;三个端点对同一 model id 语义一致
 - **思考强度**:逐档位实测上游接受度(2026-09-24,`scripts/probe-reasoning-efforts.ts`),`/v1/models` 每个模型暴露 `reasoning` + `reasoning_levels`:
   - `muse-spark-1.3-contributor-free`:`none/minimal/low/medium/high/xhigh`(`max` 上游 400);Anthropic 门面的 `thinking.budget_tokens` 档位映射不变
   - `mimo-v2.6-flash-free`:reasoning **恒开**,`reasoning_effort` 上游容忍但无效,故不暴露档位、不下发该字段
   - `space-bunny-free`:`minimal/low/medium/high/xhigh/max`(目录外还多接受 `minimal`);请求 `none` 会被钳制为 `minimal`(直接转发上游 400);Anthropic 门面 `thinking:{type:"disabled"}` 同样钳制为 `minimal`
+  - `step-5-preview-free`:`minimal/low/medium/high/xhigh/max`(与 space-bunny 同规则;上游 `none` 400 "Reasoning is mandatory for this endpoint and cannot be disabled")
+  - `deepseek-v4.1-flash-free`:`low/high/max`(上游目录 `reasoning_options` 原样;实测任意档位上游都 200,但未文档化的档位代理**丢弃**而非猜测转发,`none` 钳制为 `low`)
   - 钳制逻辑集中在 `clampEffortForModel`(`supabase/functions/muse-proxy/_lib/types.ts`),三个门面共用
 
 ```
 client ──chat/completions──▶ muse-proxy ─┬─lower──▶ opencode zen /v1/responses      (muse)
-        ◀──SSE chunks────               └─chat-upstream──▶ /v1/chat/completions    (mimo / space-bunny)
+        ◀──SSE chunks────               └─chat-upstream──▶ /v1/chat/completions    (mimo / space-bunny / step-5 / deepseek)
                                                           └─raise─▶ 同一套 raise 层
 ```
 
-新增的两个 oa-compat 模型(`supabase/functions/muse-proxy/_lib/chat-upstream.ts` + `supabase/functions/muse-proxy/_lib/oa-compat.ts`):降级(Responses input → chat messages,含 function_call 轮次回放：连续并行调用合并成一条 `assistant(content=null, tool_calls=[...])`，拆散上游直接 400)与升格(chat-completions SSE → 规范 Responses 事件生命周期:`response.created` → `output_item.added` → 文本/思考 delta → `output_text.done`/`output_item.done` → `response.completed`),三个门面共享同一转换层,语义(muse 门的工具暴露、心跳、终止事件守护)与 muse 路径完全一致。对 OpenMinis 2026-09-02 源码 (`4ef2900`) 的 Responses 解析器还补齐了 function-call 的 `output_item.added` → `function_call_arguments.delta` → `function_call_arguments.done` → `output_item.done` 顺序,避免工具参数被严格客户端静默丢弃。`/v1/models` 目录已包含全部三个模型。
+新增的 oa-compat 模型(`supabase/functions/muse-proxy/_lib/chat-upstream.ts` + `supabase/functions/muse-proxy/_lib/oa-compat.ts`):降级(Responses input → chat messages,含 function_call 轮次回放：连续并行调用合并成一条 `assistant(content=null, tool_calls=[...])`，拆散上游直接 400)与升格(chat-completions SSE → 规范 Responses 事件生命周期:`response.created` → `output_item.added` → 文本/思考 delta → `output_text.done`/`output_item.done` → `response.completed`),三个门面共享同一转换层,语义(muse 门的工具暴露、心跳、终止事件守护)与 muse 路径完全一致。对 OpenMinis 2026-09-02 源码 (`4ef2900`) 的 Responses 解析器还补齐了 function-call 的 `output_item.added` → `function_call_arguments.delta` → `function_call_arguments.done` → `output_item.done` 顺序,避免工具参数被严格客户端静默丢弃。`/v1/models` 目录已包含全部六个模型(含 goal 实验模型)。
 
 ## 部署:Supabase Edge Functions
 
@@ -155,7 +159,9 @@ client ─▶ sse-gateway:8443/mp/* ─剥/mp─▶ mp:18091 ─┬─ /v1/*    
 ```bash
 cp .env.example .env   # 填 PROXY_API_KEY / MP_ADMIN_PASSWORD
 docker compose up -d --build   # host 网络，0.0.0.0:18091（公网面靠 ufw 挡）
-MP_BASE=http://127.0.0.1:18091 MP_TEST_KEY=$PROXY_API_KEY MP_ADMIN_PASSWORD=$MP_ADMIN_PASSWORD bun run scripts/mp-smoke.ts
+MP_BASE=http://127.0.0.1:18091 MP_ADMIN_PASSWORD=$MP_ADMIN_PASSWORD bun run scripts/mp-smoke.ts
+# (api key 默认取 .env.local 的 PROXY_API_KEY; 未设 MP_ADMIN_PASSWORD 时 admin 两项会 FAIL,
+#  副出口为 0 时 egress discovery 也会 FAIL——都是环境未配置,不是服务故障)
 ```
 
 防火墙（容器网段必须能连宿主机 18091，公网不放行）：
@@ -187,20 +193,23 @@ scripts/mp-smoke.ts # 本地冒烟（健康/模型表/后台/真上游 SSE）
 
 ## 模型目录
 
-代理当前服务 **3 个 opencode zen 免费模型**。`GET /v1/models`(`supabase/functions/muse-proxy/models.ts`)按 OpenAI models-list 格式返回下表全部模型,每个条目携带 `reasoning`(是否思考)与 `reasoning_levels`(支持的思考强度档位,空数组 = 无档位控制)元数据,另有 `context_window` / `max_output_tokens` / `owned_by: "opencode-zen"`。所有模型共享免费匿名层:上游 API key 固定为字面量 `public`,按 IP 限额,无需注册;三个 API 门面(chat / responses / messages)对同一 model id 语义一致。
+代理当前服务 **6 个 opencode zen 免费模型**(5 个免费档 + 1 个 goal 实验模型)。`GET /v1/models`(`supabase/functions/muse-proxy/models.ts`)按 OpenAI models-list 格式返回下表全部模型,每个条目携带 `reasoning`(是否思考)与 `reasoning_levels`(支持的思考强度档位,空数组 = 无档位控制)元数据,另有 `context_window` / `max_output_tokens` / `owned_by: "opencode-zen"`。所有模型共享免费匿名层:上游 API key 固定为字面量 `public`,按 IP 限额,无需注册;三个 API 门面(chat / responses / messages)对同一 model id 语义一致。
 
 | 模型 ID | 名称 | 上游格式(出站路由) | 上下文窗口 | 最大输出 | 思考 | 思考强度档位 |
 |---|---|---|---|---|---|---|
-| `muse-spark-1.3-contributor-free` | Muse Spark 1.3 Contributor Free (opencode zen) | `responses` → `POST https://opencode.ai/zen/v1/responses` | 1,048,576 | 32,000 | ✅ | `none / minimal / low / medium / high / xhigh`(默认 `high`;`max` 上游 400) |
-| `mimo-v2.6-flash-free` | MiMo-V2.6-Flash Free | `oa-compat` → `POST https://opencode.ai/zen/v1/chat/completions` | 200,000 | 32,000 | ✅ 恒开 | 无(上游容忍 `reasoning_effort` 但无效,代理不下发该字段) |
-| `space-bunny-free` | Space Bunny Free | `oa-compat` → `POST https://opencode.ai/zen/v1/chat/completions` | 1,048,576 | 32,000 | ✅ 恒开 | `minimal / low / medium / high / xhigh / max`(`none` 钳制为 `minimal`,直接转发上游 400) |
+| `muse-spark-1.3-contributor-free` | Muse Spark 1.3 Contributor Free (opencode zen) | `responses` → `POST https://opencode.ai/inference/v1/responses` | 1,048,576 | 32,000 | ✅ | `none / minimal / low / medium / high / xhigh`(默认 `high`;`max` 上游 400) |
+| `mimo-v2.6-flash-free` | MiMo-V2.6-Flash Free | `oa-compat` → `POST https://opencode.ai/inference/v1/chat/completions` | 200,000 | 32,000 | ✅ 恒开 | 无(上游容忍 `reasoning_effort` 但无效,代理不下发该字段) |
+| `space-bunny-free` | Space Bunny Free | `oa-compat` → `POST https://opencode.ai/inference/v1/chat/completions` | 1,048,576 | 32,000 | ✅ 恒开 | `minimal / low / medium / high / xhigh / max`(`none` 钳制为 `minimal`,直接转发上游 400) |
+| `step-5-preview-free` | Step 5 Preview Free | `oa-compat` → `POST https://opencode.ai/inference/v1/chat/completions` | 1,000,000 | 32,000 | ✅ 必开 | `minimal / low / medium / high / xhigh / max`(`none` 钳制为 `minimal`,上游 400 "Reasoning is mandatory") |
+| `deepseek-v4.1-flash-free` | DeepSeek V4.1 Flash Free | `oa-compat` → `POST https://opencode.ai/inference/v1/chat/completions` | 200,000 | 32,000 | ✅ | `low / high / max`(`none` 钳制为 `low`;其余未文档化档位丢弃) |
+| `muse-spark-1.3-contributor-goal` | Muse Spark 1.3 Contributor Goal | `responses`(同 muse,上游 id 仍发 muse) | 1,048,576 | 32,000 | ✅ | `none / minimal / low / medium / high / xhigh`(同 muse,另加 goal 自动续轮) |
 
 ### muse-spark-1.3-contributor-free(默认模型)
 
 - **定位**:Muse Spark 1.3 Contributor 免费层,经 opencode zen 原生 Responses 上游提供;**任何未知/未匹配的 model id 都回落到这里**(历史行为,永不报 404)。
 - **别名**:`model id 含 "muse"` 即匹配(如 `muse`、`muse-spark-1.3`)。
 - **思考**:支持**加密思考回放**——流式/聚合响应携带 `encrypted_content`(Responses 门面)或 `reasoning_details`(chat 门面),多轮对话原样透传回上游;Anthropic 门面的 `thinking.budget_tokens` 档位映射不变(`<2048→low`、`<8192→medium`、`<24576→high`、`≥24576→xhigh`,`disabled→none`)。
-- **路由格式**:唯一走 `responses` 上游的模型(`lower.ts` 直发 `/zen/v1/responses`)。
+- **路由格式**:唯一走 `responses` 上游的模型(`lower.ts` 直发 `/inference/v1/responses`)。
 - **定义处**:`supabase/functions/muse-proxy/_lib/types.ts` 的 `MUSE_INFO`。
 
 ### mimo-v2.6-flash-free
@@ -219,21 +228,39 @@ scripts/mp-smoke.ts # 本地冒烟（健康/模型表/后台/真上游 SSE）
 - **并行工具调用**:同轮多个 `tool_calls` 必须合并在一条 `assistant` 消息里回放,拆成多条 `assistant` 消息(每条带一个调用)上游直接 400 `invalid_request_error`。网关客户端习惯并行调用,多轮后必触发,表现为“聊几句就报错”。代理已在 `supabase/functions/muse-proxy/_lib/chat-upstream.ts` 的 `lowerInputToMessages` 内把连续 `function_call` 聚合成一条 `assistant(content=null, tool_calls=[...])`,三个门面共用,无需客户端改形状。
 - **路由格式**:`oa-compat`(chat completions);走 `/v1/responses` 上游返回 401 `ModelError: not supported for format openai`。
 
-> 上表的档位接受度均为 2026-09-24 逐档位实测结论(`scripts/probe-reasoning-efforts.ts`);路由与钳制逻辑集中在 `supabase/functions/muse-proxy/_lib/types.ts`(`resolveModel` / `clampEffortForModel`),三个门面共用,新增模型时先更新 `MODELS` 目录再跑 `bun run smoke:newmodels` 与 `bun run smoke:efforts`。
+### step-5-preview-free
+
+- **定位**:Step 5 限时预览推理模型,支持工具调用与多模态输入(免费层)。
+- **别名**:`model id 包含 "step-5"` 或以 `step5` 开头即匹配。
+- **思考**:**必开**——上游对 `none` 直接 400 "Reasoning is mandatory for this endpoint and cannot be disabled",因此与 space-bunny 同规则钳制为 `minimal`。
+- **路由格式**:`oa-compat`(chat completions)。
+- **定义处**:`supabase/functions/muse-proxy/_lib/types.ts` 的 `STEP5_INFO`。
+
+### deepseek-v4.1-flash-free
+
+- **定位**:DeepSeek V4.1 Flash,面向推理与 agentic coding(免费层,catalog `release_date` 2026-09-10)。
+- **别名**:`model id 以 "deepseek" 开头(大小写不敏感)`即匹配——包含 zen 付费目录名(如 `deepseek-v4-flash`)与其它 deepseek id,全部由免费 V4.1 Flash 变体服务(同 mimo 的处理方式)。
+- **思考**:流式为 `delta.reasoning_content`(catalog 的 `interleaved.field` 原样;`OaCompatRaiser` 同时兼容 `reasoning`);档位取 catalog 的 `reasoning_options` = `low/high/max`。
+- **路由格式**:`oa-compat`(chat completions)且**仅此一种**——2026-10-16 探针(`scripts/probe-deepseek-routing.ts`)实测 `/inference/v1/responses` 返回 400 `ModelProtocolUnsupported: Model does not support this protocol`,同一 body 打到 `/inference/v1/chat/completions` 返回 200。
+- **能力**:工具调用、图片输入(`attachment`)、`temperature`、结构化输出均可用;`context 200,000` / `output 32,000`(`models.opencode.ai/api.json` 的 `opencode/deepseek-v4.1-flash-free`)。
+- **定义处**:`supabase/functions/muse-proxy/_lib/types.ts` 的 `DEEPSEEK_INFO`。
+
+> 上表的档位接受度均为逐档位实测结论(muse/mimo/space-bunny 2026-09-24 起、step-5 2026-10-10、deepseek 2026-10-16);路由与钳制逻辑集中在 `supabase/functions/muse-proxy/_lib/types.ts`(`resolveModel` / `clampEffortForModel`),三个门面共用,新增模型时先更新 `MODELS` 目录再跑 `bun run smoke:newmodels` 与 `bun run smoke:efforts`。
 
 ## 快速开始
 
 ```bash
 bun install            # 或 npm install
-bun run test           # 181 个单元/集成/沙箱端到端测试(mock 上游,无需联网)
+bun run test           # 215 个单元/集成/沙箱端到端测试(mock 上游,无需联网)
 bun run serve:edge     # 无 Docker 运行 Edge Function(Deno,$PORT,默认 8788)
 bun run smoke:edge     # Edge Function 真实上游 HTTP 套件(需先 serve:edge)
 bun run deploy:functions # supabase functions deploy muse-proxy
 bun run smoke          # 真实连通性冒烟(需联网,验证 stream:false 与 stream:true)
 bun run smoke:responses # /v1/responses 真实上游全功能冒烟(需联网,7 项 36 检查)
 bun run smoke:messages  # /v1/messages 真实上游全功能冒烟(需联网,8 项任务)
-bun run smoke:newmodels # 两个新模型 × 三门面全链路真实上游冒烟(需联网,9 项任务 × 2 模型 + muse 回归)
-bun run smoke:efforts  # 思考强度档位真实上游冒烟:/v1/models 元数据 + 档位端到端 + none 钳制
+bun run smoke:newmodels # oa-compat 模型 × 三门面全链路真实上游冒烟(需联网,9 项任务 × 4 模型 + muse 回归)
+                       #   矩阵较大,可分片跑:bun run smoke:newmodels deepseek-v4.1-flash-free --steps=chat,chat-stream,responses,responses-stream
+bun run smoke:efforts  # 思考强度档位真实上游冒烟:/v1/models 元数据 + 5 模型档位端到端 + none 钳制
 bun run smoke:tools    # agent 工具循环真实上游冒烟:3 模型 × 3 门面,流式 tool call → 执行 → 回传 → 结果落地
 bun run smoke:openminis # OpenMinis file_write 真实上游探针:3 门面 × 5 个参数的全量回放 + 模型生成工具调用
 bun run eval           # 完整 agent 评测:xhigh 思考 + web_search 工具循环 + 3 轮多轮对话
@@ -532,22 +559,79 @@ bun run test      # 214/214(test/tools.test.ts 钉住别名原语,test/alias-dow
 bun run typecheck # tsc --noEmit 通过
 ```
 
-## 7. 下次上游再更新时的排查清单(Cheat Sheet)
+## 7. 2026-10-16 复核:源码再搬家 + 新模型接入(deepseek-v4.1-flash-free)
+
+这一轮上游**没有**升级门槛(指纹一字未改),但做了三件事:重拉 opencode 源码、同步版本号、接入新的免费模型。
+
+### 7.1 重拉源码后发现的变化
+
+```bash
+cd ~ && git clone --depth 1 https://github.com/anomalyco/opencode opencode   # dev 分支,本次 tip e25b7ab
+```
+
+- **npm 包版本 2.0.29 → 2.0.30**(`npm view @opencode/cli version`;`packages/cli/package.json` 同值)。实测 2.0.29 与 2.0.30 的 UA 都能过闸门,代理照旧跟随 npm latest。
+- **请求构造再搬家**:`packages/opencode/src/session/llm/request.ts` → **`packages/core/src/session/model-request.ts`**;UA 构造仍在 `packages/core/src/app.ts` 的 `useragent()`,格式未变。
+- **头集合未变**(`model-request.ts` 的 `headers`):`x-opencode-session-id` / `x-session-affinity` / `X-Session-Id` / `x-opencode-project` / `x-opencode-session` / `x-opencode-client` / `User-Agent`(+ 子会话时的 parent 头),**仍无 `x-opencode-request`** —— 与代理目前发的四种 session 别名完全一致。
+- **内置工具集未变**:`packages/core/src/tool/plugin/*.ts` 仍是 `edit glob grep question read shell skill subagent webfetch websearch write`(加上 `codemode/tool.ts` 的 `execute`),即 `_lib/tools.ts` 里逐字下发的 12 个;带旧定义的实测请求依旧 200,无需重抓。
+
+结论:**本轮只同步 `OPENCODE_VERSION`**,头/ID/工具定义一律不动。
+
+### 7.2 新模型接入(deepseek-v4.1-flash-free)
+
+新模型入目录的固定四步(照此办理):
+
+1. **读目录**:从 `https://models.opencode.ai/api.json` 的 `opencode.models` 取条目(id / name / limit / reasoning_options / interleaved / attachment / tool_call / cost)。
+2. **探路由**:跑 `bun run scripts/probe-deepseek-routing.ts[模型 id]`——同一份过闸门 body 分别打 `/inference/v1/chat/completions` 与 `/inference/v1/responses`,看哪个返回 200。deepseek 只活在前者(`ModelProtocolUnsupported` 只在后者出现);要逐档位看的话加 `PROBE_EFFORTS=1`。
+3. **写目录**:`supabase/functions/muse-proxy/_lib/types.ts` 新增 `MODEL_DEEPSEEK` / `DEEPSEEK_INFO`、`MODELS` 加一行、`resolveModel` 加别名(catalog 文档里只列 `low/high/max`,即使上游对其它档位也 200,代理也不猜——未文档化档位丢弃,`none` 钳制到目录最低档 `low`)。
+4. **开思考标记 + 测试**:`supabase/functions/muse-proxy/models.ts` 的 `REASONING_MODELS` 加 id(使 `/v1/models` 的 `reasoning:true` 成立),并同步 `test/chat-upstream.test.ts` / `test/router.test.ts` 的目录断言与 `test/pipeline.test.ts` / `test/router.test.ts` 的 UA 断言。
+
+三个门面无需任何改动:路由分发统一看 `resolveModel(...).upstream === "oa-compat"`(`chat.ts` / `responses.ts` / `messages.ts` 各一处),新增 oa-compat 模型自动获得 chat / responses / messages 三门面支持。
+
+### 7.3 验证(全部真实上游)
+
+```bash
+bun run test                                                        # 215/215
+bun run typecheck                                                   # tsc --noEmit 通过
+bun run scripts/probe-deepseek-routing.ts                           # oa-compat 200 / responses 400 ModelProtocolUnsupported
+bun run smoke:newmodels deepseek-v4.1-flash-free --steps=chat,chat-stream,responses,responses-stream
+bun run smoke:newmodels deepseek-v4.1-flash-free --steps=messages,messages-stream,tools,memory
+bun run smoke:newmodels deepseek-v4.1-flash-free --steps=large      # 各轮内附 muse 回归
+bun run smoke:newmodels mimo-v2.6-flash-free                        # 回归:mimo 全量
+bun run smoke:newmodels space-bunny-free step-5-preview-free        # 回归:其余 oa-compat 模型全量
+bun run smoke:tools                                                 # 164/164:3 模型 × 3 门面工具回合
+bun run smoke:efforts                                               # 22/22:含 deepseek 全档位
+bun run mp-smoke                                                    # egress 本机运行时:三门面打真实上游
+```
+
+### 7.4 GitHub 上的三线同步(egress / supabase / main)
+
+三个分支共享同一套门面实现,只是宿主不同,新模型必须**三线同时落地**,否则客户端把 base_url 指到另一条线时模型凭空消失:
+
+| 分支 | 形态 | 本分支额外内容 | 同步方式 |
+|---|---|---|---|
+| `main` | Vercel 部署 | `api/*` 兼容外壳 + `api/_lib/*`(实现本体) | 把本轮的 `_lib/types.ts` / `models.ts` / UA 常量 / 测试 / README 改动 cherry-pick 或手工对齐到 `api/` 下的同名文件 |
+| `supabase` | Supabase Edge Function | `supabase/functions/muse-proxy/*` + `api/*` 外壳 | 与 egress 的 `supabase/` 树同源,直接对齐 |
+| `egress` | 本机常驻(Docker) | 额外 `server/`(出口 IP 轮询)+ `admin-web/` | 以本分支为准 |
+
+> 切分支后发现“模型消失了”,先对 `git diff origin/<分支>..<分支> -- '*types.ts'`,确认目录同步到位再怀疑上游。
+
+## 8. 下次上游再更新时的排查清单(Cheat Sheet)
 
 按序检查,命中即修:
 
 1. **报错是否变了文案/状态码?** 收集当前 4xx 响应体,和 `supabase/functions/muse-proxy/_lib/errors.ts` 的映射对照。429→403 或新增 `FreeTierError` 字样 = 门槛升级信号。
 2. **重抓基准(唯一权威)。** 用**当前版本真实 CLI** 抓一份完整请求(头+体)并精确重放确认 200。v1 客户端可用 `scripts/capture-server.ts`;v2 客户端的 provider 基址来自 models.dev/远程配置,配置覆盖不生效,**必须本地 MITM**(见第 5.5 节)。
-3. **版本号过期?** 先确认跟的是哪条线:`@opencode/cli`(v2,仓库 `anomalyco/opencode`,线上 UA `opencode/latest/<version>/cli`)还是 `opencode-ai`(v1)。`npm view @opencode/cli version`,更新 `supabase/functions/muse-proxy/_lib/types.ts` 的 `OPENCODE_VERSION` / `OPENCODE_CHANNEL`。上游大版本发布后这几乎总是第一步。
+3. **版本号过期?** 先确认跟的是哪条线:`@opencode/cli`(v2,仓库 `anomalyco/opencode`,线上 UA `opencode/latest/<version>/cli`)还是 `opencode-ai`(v1)。`npm view @opencode/cli version`,重拉源码(`git clone --depth 1 https://github.com/anomalyco/opencode opencode`)看 `packages/cli/package.json` 与 UA 构造位置(2026-10-16 为 `packages/core/src/app.ts` + `packages/core/src/session/model-request.ts`),再更新 `supabase/functions/muse-proxy/_lib/types.ts` 的 `OPENCODE_VERSION` / `OPENCODE_CHANNEL`。上游大版本发布后这几乎总是第一步。
 4. **头指纹变了?** 对比抓包头与 `supabase/functions/muse-proxy/chat.ts` 发的头集合(新增头?删除头?UA 格式?)。注意:**仓库源码的 UA 构造可能与线上二进制不一致**,以抓包为准。
 5. **ID 形状变了?** 两步走:(a) 对照 `packages/schema/src/identifier.ts` 的 `Identifier.create`(前缀、26 字符、**descending 取反**)更新 `supabase/functions/muse-proxy/_lib/identity.ts`;(b) **逐位扫描**——固定前缀只扫低 12 位(或 counter),找出上游接受的区间。2026-10-13 的门槛就是"低 12 位 ≥ 0xFC0":形状正确但 ascending 一样被拒,别只测长度和前缀。
 6. **请求体指纹变了?(2026-09-18 / 2026-10-14 新增此类)** 用抓包体做消融:删 tools / 换 tools / 加 `reasoning` / 改 `prompt_cache_key` / 首条 role 换 `system`,一次只改一项,找到被校验的新字段。内置工具清单与**逐字定义**存于 `supabase/functions/muse-proxy/_lib/tools.ts`,若 CLI 工具集变化则重抓刷新该数组;注意门槛现在会逐字比对描述与参数,且退役名(`bash`/`task`/`todowrite`)与同名遮蔽都会 403——客户端同名工具走 `mp_` 别名。
 7. **上游 API 支持面变了?** 例如 `tool_choice` 现在只支持 `"auto"`;留意 400 响应里的 `param` 字段直接指出被拒参数。
 8. **报错文案 grep 不到?** 校验在闭源边缘服务里,别浪费时间翻 CLI 逻辑,专注完整模仿客户端指纹(头 + 体)。
 9. **免费模型 ID 变了?** 留意 zen 模型目录与 `MODEL_ID`(`muse-spark-1.3-contributor-free`)。
-10. 修复后按顺序跑 `bun run test` → `bun run smoke` → `bun run eval`,全绿再收工。
+10. **新模型要加?** `models.opencode.ai/api.json` 拿条目 → `scripts/probe-deepseek-routing.ts` 探格式(oa-compat 还是 responses)→ `MODELS` / `resolveModel` / `REASONING_MODELS` → `bun run smoke:newmodels <模型> --steps=...` 全项 → `bun run smoke:efforts`。详细步骤见第 7.2 节。
+11. 修复后按顺序跑 `bun run test` → `bun run smoke` → `bun run eval`,全绿再收工;模型矩阵类套件用 `smoke:newmodels` 的 `--steps=` 分片跑,别在一个命令里打几十次真实上游。
 
-## 8. 行为与合规注意事项
+## 9. 行为与合规注意事项
 
 - 指纹模仿的是**无凭据的免费匿名层**,按 IP 限额;请勿用于绕过付费或大规模滥用,上游随时可能再次收紧。
 - 内置工具按门槛要求**逐字下发**(描述/参数与真实客户端一致)——这是 2026-10-14 起过门槛的必要条件。
