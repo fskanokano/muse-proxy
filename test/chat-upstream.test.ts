@@ -174,6 +174,19 @@ describe("effort clamping per model", () => {
     expect(none.reasoning_effort).toBe("minimal")
   })
 
+  it("deepseek: catalog levels low/high/max forwarded, none clamped to low, others dropped", () => {
+    for (const level of ["low", "high", "max"]) {
+      const request = lowerChatUpstream({ model: MODELS["deepseek-v4.1-flash-free"]!, input: [], tools: [], effort: level })
+      expect(request.reasoning_effort).toBe(level)
+    }
+    for (const level of ["minimal", "medium", "xhigh"]) {
+      const request = lowerChatUpstream({ model: MODELS["deepseek-v4.1-flash-free"]!, input: [], tools: [], effort: level })
+      expect(request.reasoning_effort).toBeUndefined()
+    }
+    const none = lowerChatUpstream({ model: MODELS["deepseek-v4.1-flash-free"]!, input: [], tools: [], effort: "none" })
+    expect(none.reasoning_effort).toBe("low")
+  })
+
   it("clampEffortForModel: unknown values dropped, muse whitelist untouched", () => {
     const muse = resolveModel(MODEL_MUSE)
     expect(muse.efforts).toContain("none")
@@ -189,6 +202,9 @@ describe("resolveModel routing", () => {
     expect(resolveModel("step5").id).toBe("step-5-preview-free")
     expect(resolveModel("mimo-v2.6-flash").id).toBe("mimo-v2.6-flash-free")
     expect(resolveModel("space-bunny").id).toBe("space-bunny-free")
+    expect(resolveModel("deepseek-v4.1-flash-free").id).toBe("deepseek-v4.1-flash-free")
+    expect(resolveModel("DeepSeek-V4.1-Flash").id).toBe("deepseek-v4.1-flash-free")
+    expect(resolveModel("deepseek-chat").id).toBe("deepseek-v4.1-flash-free")
     expect(resolveModel("muse").id).toBe("muse-spark-1.3-contributor-free")
     expect(resolveModel("gpt-5.5").id).toBe("muse-spark-1.3-contributor-free")
     expect(resolveModel(undefined).id).toBe("muse-spark-1.3-contributor-free")
@@ -200,13 +216,14 @@ describe("/v1/models catalog", () => {
   const created = 1_758_000_000
   const list = modelsList(created)
 
-  it("lists all four free models with reasoning metadata", () => {
+  it("lists all free models with reasoning metadata", () => {
     const ids = list.data.map((m: { id: string }) => m.id)
     expect(ids).toEqual([
       "muse-spark-1.3-contributor-free",
       "mimo-v2.6-flash-free",
       "space-bunny-free",
       "step-5-preview-free",
+      "deepseek-v4.1-flash-free",
       "muse-spark-1.3-contributor-goal",
     ])
     for (const entry of list.data) {
@@ -226,6 +243,10 @@ describe("/v1/models catalog", () => {
     expect(byId.get("muse-spark-1.3-contributor-free")!.reasoning_levels).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
     expect(byId.get("step-5-preview-free")!.reasoning_levels).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"])
     expect(byId.get("step-5-preview-free")!.reasoning).toBe(true)
+    expect(byId.get("deepseek-v4.1-flash-free")!.reasoning_levels).toEqual(["low", "high", "max"])
+    expect(byId.get("deepseek-v4.1-flash-free")!.reasoning).toBe(true)
+    expect(byId.get("muse-spark-1.3-contributor-goal")!.reasoning_levels).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+    expect(byId.get("muse-spark-1.3-contributor-goal")!.reasoning).toBe(true)
   })
 })
 
