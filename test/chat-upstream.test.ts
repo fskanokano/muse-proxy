@@ -187,6 +187,19 @@ describe("effort clamping per model", () => {
     expect(none.reasoning_effort).toBe("low")
   })
 
+  it("glm: catalog levels low/high/max forwarded, none clamped to low, others dropped", () => {
+    for (const level of ["low", "high", "max"]) {
+      const request = lowerChatUpstream({ model: MODELS["glm-5.3-flash-free"]!, input: [], tools: [], effort: level })
+      expect(request.reasoning_effort).toBe(level)
+    }
+    for (const level of ["minimal", "medium", "xhigh"]) {
+      const request = lowerChatUpstream({ model: MODELS["glm-5.3-flash-free"]!, input: [], tools: [], effort: level })
+      expect(request.reasoning_effort).toBeUndefined()
+    }
+    const none = lowerChatUpstream({ model: MODELS["glm-5.3-flash-free"]!, input: [], tools: [], effort: "none" })
+    expect(none.reasoning_effort).toBe("low")
+  })
+
   it("clampEffortForModel: unknown values dropped, muse whitelist untouched", () => {
     const muse = resolveModel(MODEL_MUSE)
     expect(muse.efforts).toContain("none")
@@ -205,6 +218,10 @@ describe("resolveModel routing", () => {
     expect(resolveModel("deepseek-v4.1-flash-free").id).toBe("deepseek-v4.1-flash-free")
     expect(resolveModel("DeepSeek-V4.1-Flash").id).toBe("deepseek-v4.1-flash-free")
     expect(resolveModel("deepseek-chat").id).toBe("deepseek-v4.1-flash-free")
+    expect(resolveModel("glm-5.3-flash-free").id).toBe("glm-5.3-flash-free")
+    expect(resolveModel("glm-5.3-flash").id).toBe("glm-5.3-flash-free")
+    expect(resolveModel("GLM-5").id).toBe("glm-5.3-flash-free")
+    expect(resolveModel("glm-4.7-flash").id).toBe("glm-5.3-flash-free")
     expect(resolveModel("muse").id).toBe("muse-spark-1.3-contributor-free")
     expect(resolveModel("gpt-5.5").id).toBe("muse-spark-1.3-contributor-free")
     expect(resolveModel(undefined).id).toBe("muse-spark-1.3-contributor-free")
@@ -224,6 +241,7 @@ describe("/v1/models catalog", () => {
       "space-bunny-free",
       "step-5-preview-free",
       "deepseek-v4.1-flash-free",
+      "glm-5.3-flash-free",
       "muse-spark-1.3-contributor-goal",
     ])
     for (const entry of list.data) {
@@ -245,6 +263,8 @@ describe("/v1/models catalog", () => {
     expect(byId.get("step-5-preview-free")!.reasoning).toBe(true)
     expect(byId.get("deepseek-v4.1-flash-free")!.reasoning_levels).toEqual(["low", "high", "max"])
     expect(byId.get("deepseek-v4.1-flash-free")!.reasoning).toBe(true)
+    expect(byId.get("glm-5.3-flash-free")!.reasoning_levels).toEqual(["low", "high", "max"])
+    expect(byId.get("glm-5.3-flash-free")!.reasoning).toBe(true)
     expect(byId.get("muse-spark-1.3-contributor-goal")!.reasoning_levels).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
     expect(byId.get("muse-spark-1.3-contributor-goal")!.reasoning).toBe(true)
   })

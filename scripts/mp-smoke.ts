@@ -30,22 +30,31 @@ check(
   deepseekEntry?.reasoning === true && deepseekEntry?.reasoning_levels?.join(",") === "low,high,max",
   JSON.stringify(deepseekEntry?.reasoning_levels),
 );
+const glmEntry = modelsJson?.data?.find((m) => m.id === "glm-5.3-flash-free") as
+  | { reasoning?: boolean; reasoning_levels?: string[] }
+  | undefined;
+check(
+  "models advertises glm-5.3-flash-free (reasoning low/high/max)",
+  glmEntry?.reasoning === true && glmEntry?.reasoning_levels?.join(",") === "low,high,max",
+  JSON.stringify(glmEntry?.reasoning_levels),
+);
 
-// deepseek 走 oa-compat 上游, 三个门面各打一次真实上游 (非流式, 断言文本回显)。
-const DEEPSEEK = "deepseek-v4.1-flash-free";
-for (const [label, path, body, headers] of [
-  ["chat", "/v1/chat/completions", { model: DEEPSEEK, stream: false, messages: [{ role: "user", content: "Reply with exactly: LOCAL-OK" }] }, { authorization: `Bearer ${KEY}` }],
-  ["responses", "/v1/responses", { model: DEEPSEEK, input: "Reply with exactly: LOCAL-OK", stream: false }, { authorization: `Bearer ${KEY}` }],
-  ["messages", "/v1/messages", { model: DEEPSEEK, max_tokens: 256, messages: [{ role: "user", content: "Reply with exactly: LOCAL-OK" }] }, { "x-api-key": KEY }],
-] as const) {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
-  });
-  const text = await res.text();
-  check(`deepseek ${label} real upstream`, res.status === 200 && text.includes("LOCAL-OK"), `status=${res.status} ${text.replace(/\s+/g, " ").slice(0, 160)}`);
+// deepseek / glm 走 oa-compat 上游, 三个门面各打一次真实上游 (非流式, 断言文本回显)。
+for (const MODEL of ["deepseek-v4.1-flash-free", "glm-5.3-flash-free"]) {
+  for (const [label, path, body, headers] of [
+    ["chat", "/v1/chat/completions", { model: MODEL, stream: false, messages: [{ role: "user", content: "Reply with exactly: LOCAL-OK" }] }, { authorization: `Bearer ${KEY}` }],
+    ["responses", "/v1/responses", { model: MODEL, input: "Reply with exactly: LOCAL-OK", stream: false }, { authorization: `Bearer ${KEY}` }],
+    ["messages", "/v1/messages", { model: MODEL, max_tokens: 256, messages: [{ role: "user", content: "Reply with exactly: LOCAL-OK" }] }, { "x-api-key": KEY }],
+  ] as const) {
+    const res = await fetch(`${BASE}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    });
+    const text = await res.text();
+    check(`${MODEL} ${label} real upstream`, res.status === 200 && text.includes("LOCAL-OK"), `status=${res.status} ${text.replace(/\s+/g, " ").slice(0, 160)}`);
+  }
 }
 
 const login = await fetch(`${BASE}/admin/api/login`, {

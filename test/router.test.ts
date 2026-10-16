@@ -146,6 +146,7 @@ describe("edge function dispatch", () => {
       "space-bunny-free",
       "step-5-preview-free",
       "deepseek-v4.1-flash-free",
+      "glm-5.3-flash-free",
       "muse-spark-1.3-contributor-goal",
     ])
     expect(calls).toHaveLength(0)
