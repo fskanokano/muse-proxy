@@ -33,7 +33,16 @@ export const UPSTREAM_API_KEY = "public"
 // instead; both pass the gate today, but the proxy mirrors the current
 // client. Re-verify on every upstream version bump (`npm view @opencode/cli
 // version`; the channel is "latest" for any non-snapshot release).
-export const OPENCODE_VERSION = "2.0.29"
+//
+// 2026-10-16 re-verification after re-cloning the upstream repo (dev tip
+// e25b7ab, packages/cli/package.json 2.0.30): the UA builder is unchanged
+// (`packages/core/src/app.ts` `useragent()` == `opencode/${channel}/${version}/${name}`)
+// and the request headers moved to `packages/core/src/session/model-request.ts`
+// with the same four session aliases the proxy already sends (session /
+// session-id / affinity / x-session-id) and still NO `x-opencode-request`.
+// Live-probed both versions against /inference/v1: 2.0.29 and 2.0.30 both 200,
+// so the constant simply follows npm latest.
+export const OPENCODE_VERSION = "2.0.30"
 export const OPENCODE_CHANNEL = "latest"
 export const OPENCODE_CLIENT = "cli"
 export const UPSTREAM_USER_AGENT = `opencode/${OPENCODE_CHANNEL}/${OPENCODE_VERSION}/${OPENCODE_CLIENT}`
@@ -60,6 +69,8 @@ export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high"
 //      for format openai")
 //   - step-5-preview-free              -> "oa-compat" (same route as
 //     space-bunny; confirmed 200 on the real edge 2026-10-10)
+//   - deepseek-v4.1-flash-free         -> "oa-compat" (probed 2026-10-16:
+//     /inference/v1/responses 400 ModelProtocolUnsupported, chat/completions 200)
 // The muse paths (types.ts + lower*.ts + chat-upstream-less handlers) must
 // stay untouched; new models therefore route through a dedicated converter
 // (_lib/chat-upstream.ts) while muse keeps using the Responses upstream.
@@ -67,6 +78,7 @@ export const MODEL_MUSE = "muse-spark-1.3-contributor-free"
 export const MODEL_MIMO = "mimo-v2.6-flash-free"
 export const MODEL_SPACE_BUNNY = "space-bunny-free"
 export const MODEL_STEP5 = "step-5-preview-free"
+export const MODEL_DEEPSEEK = "deepseek-v4.1-flash-free"
 /** 实验模型: 与 muse 同一上游, 但启用代理层 goal 自动续轮 (见 _lib/goal.ts)。 */
 export const MODEL_GOAL = "muse-spark-1.3-contributor-goal"
 
@@ -152,6 +164,30 @@ const STEP5_INFO: ModelInfo = {
   maxOutputTokens: 32_000,
   efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
 }
+// models.opencode.ai catalog (opencode/deepseek-v4.1-flash-free, read
+// 2026-10-16): family "deepseek-flash", release 2026-09-10, attachment +
+// tool_call + structured_output + temperature true, reasoning_options
+// [{type:"effort", values:["low","high","max"]}], interleaved field
+// `reasoning_content`, limit context 200,000 / output 32,000, cost 0/0/0.
+// Live-probed 2026-10-16 (scripts/probe-deepseek-routing.ts):
+//   - format is oa-compat ONLY — `/inference/v1/chat/completions` 200,
+//     `/inference/v1/responses` 400 `ModelProtocolUnsupported`
+//     ("Model does not support this protocol.").
+//   - thinking streams on `delta.reasoning_content` (the catalog's interleaved
+//     field; OaCompatRaiser already reads it).
+//   - every effort string is tolerated (200, reasoning still emitted), but the
+//     catalog documents only low/high/max, so the proxy advertises and forwards
+//     exactly those and `clampEffortForModel` drops the rest.
+const DEEPSEEK_INFO: ModelInfo = {
+  id: MODEL_DEEPSEEK,
+  name: "DeepSeek V4.1 Flash Free",
+  upstream: "oa-compat",
+  description:
+    "DeepSeek V4.1 Flash model for reasoning and agentic coding (free tier). Thinking streams as reasoning_content; effort levels low/high/max.",
+  contextWindow: 200_000,
+  maxOutputTokens: 32_000,
+  efforts: ["low", "high", "max"],
+}
 // 实验模型: 与 muse 同一上游 (upstream responses 格式, 32K 输出),
 // 区别仅在于门面为其启用 goal 自动续轮: 无工具干净收尾时先过 judge,
 // 判未完成则自动续一轮 (cap 见 MP_GOAL_MAX_ROUNDS)。上游永远收到 muse id。
@@ -173,6 +209,7 @@ export const MODELS: Record<string, ModelInfo> = {
   [MODEL_MIMO]: MIMO_INFO,
   [MODEL_SPACE_BUNNY]: SPACE_BUNNY_INFO,
   [MODEL_STEP5]: STEP5_INFO,
+  [MODEL_DEEPSEEK]: DEEPSEEK_INFO,
   [MODEL_GOAL]: GOAL_INFO,
 }
 
@@ -207,6 +244,7 @@ export function resolveModel(requested: unknown): ModelInfo {
   if (direct) return direct
   const normalized = requested.toLowerCase()
   if (normalized.startsWith("mimo")) return MIMO_INFO
+  if (normalized.startsWith("deepseek")) return DEEPSEEK_INFO
   if (normalized.includes("space-bunny")) return SPACE_BUNNY_INFO
   if (normalized.includes("step-5") || normalized.includes("step5")) return STEP5_INFO
   if (normalized.includes("muse")) return MUSE_INFO

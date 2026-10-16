@@ -149,10 +149,11 @@ describe("handleChatRequest", () => {
     mockFetch(sseResponse([{ type: "response.completed", response: {} }]))
     await handleChatRequest(postRequest({ messages: [{ role: "user", content: "hi" }] }), ENV)
     const headers = calls[0]!.init!.headers as Record<string, string>
-    // Mirrors the shipped 2.0.29 CLI wire format (captured 2026-10-14):
+    // Mirrors the shipped CLI wire format (captured 2026-10-14, re-verified
+    // 2026-10-16 against 2.0.30):
     // `opencode/<channel>/<version>/<client>` — NOT the legacy v1
     // ai-sdk/provider-utils UA the 1.18.x binary emitted.
-    expect(headers["user-agent"]).toBe("opencode/latest/2.0.29/cli")
+    expect(headers["user-agent"]).toBe("opencode/latest/2.0.30/cli")
     expect(headers["x-opencode-client"]).toBe("cli")
     expect(headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
     // The shipped client sends no x-opencode-request; adding it back 403s.

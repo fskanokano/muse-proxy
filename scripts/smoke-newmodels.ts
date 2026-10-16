@@ -1,7 +1,12 @@
 // Real end-to-end smoke for the new free models (mimo-v2.6-flash-free,
-// space-bunny-free, step-5-preview-free) across all three facades against the
-// REAL opencode zen upstream (network required).
-// Usage: bun run smoke:newmodels
+// space-bunny-free, step-5-preview-free, deepseek-v4.1-flash-free) across all
+// three facades against the REAL opencode zen upstream (network required).
+// Usage: bun run smoke:newmodels [model ...] [--steps=chat,chat-stream,...]
+//   - no model arg  -> every model below
+//   - no --steps    -> every step below
+//   The filters exist because the full matrix is ~36 real upstream calls
+//   (including long generations) and therefore has to be run in bounded
+//   chunks: e.g. `--steps=chat,chat-stream,responses,responses-stream`.
 //
 // Unlike the muse facades (which hit /zen/v1/responses), these models are
 // routed by resolveModel() onto the oa-compat upstream (/zen/v1/chat/
@@ -30,7 +35,12 @@ import { handleMessagesRequest } from "../api/messages"
 const PORT = 8912
 const KEY = process.env.PROXY_API_KEY ?? "smoke-key"
 const BASE = `http://127.0.0.1:${PORT}`
-const MODELS = ["mimo-v2.6-flash-free", "space-bunny-free", "step-5-preview-free"]
+const MODELS = [
+  "mimo-v2.6-flash-free",
+  "space-bunny-free",
+  "step-5-preview-free",
+  "deepseek-v4.1-flash-free",
+]
 
 let passed = 0
 const failures: string[] = []
@@ -388,27 +398,52 @@ async function museRegression(): Promise<void> {
   expect(mOut.includes("MUSE-OK"), `[muse] messages stream content`, mOut.slice(0, 60))
 }
 
+interface Step {
+  /** `--steps=` key. */
+  key: string
+  name: string
+  run: (model: string) => Promise<void>
+}
+
+const STEPS: Step[] = [
+  { key: "chat", name: "chat non-streaming", run: chatNonStreaming },
+  { key: "chat-stream", name: "chat streaming", run: chatStreaming },
+  { key: "responses", name: "responses non-streaming", run: responsesNonStreaming },
+  { key: "responses-stream", name: "responses streaming", run: responsesStreaming },
+  { key: "messages", name: "messages non-streaming", run: messagesNonStreaming },
+  { key: "messages-stream", name: "messages streaming", run: messagesStreaming },
+  { key: "tools", name: "tool loop", run: toolLoop },
+  { key: "memory", name: "multi-turn memory", run: multiTurnMemory },
+  { key: "large", name: "large streaming", run: largeStreaming },
+]
+
 async function main(): Promise<void> {
+  const argv = process.argv.slice(2)
+  const modelArgs = argv.filter((arg) => !arg.startsWith("--"))
+  const stepsArg = argv.find((arg) => arg.startsWith("--steps="))
+  const requestedKeys = (stepsArg?.slice("--steps=".length) ?? "")
+    .split(",")
+    .map((key) => key.trim())
+    .filter((key) => key.length > 0)
+  if (requestedKeys.length > 0) {
+    const unknown = requestedKeys.filter((key) => !STEPS.some((step) => step.key === key))
+    if (unknown.length > 0) {
+      console.log(`unknown --steps keys: ${unknown.join(", ")}; available: ${STEPS.map((s) => s.key).join(", ")}`)
+      process.exit(2)
+    }
+  }
+  const steps = requestedKeys.length > 0 ? STEPS.filter((step) => requestedKeys.includes(step.key)) : STEPS
+  const models = modelArgs.length > 0 ? modelArgs : MODELS
+
   await startServer()
   console.log(`\n=== NEW MODELS on real opencode zen (proxy at ${BASE}) ===`)
-  for (const model of MODELS) {
+  for (const model of models) {
     console.log(`\n--- ${model} ---`)
-    const steps: Array<[string, () => Promise<void>]> = [
-      ["chat non-streaming", () => chatNonStreaming(model)],
-      ["chat streaming", () => chatStreaming(model)],
-      ["responses non-streaming", () => responsesNonStreaming(model)],
-      ["responses streaming", () => responsesStreaming(model)],
-      ["messages non-streaming", () => messagesNonStreaming(model)],
-      ["messages streaming", () => messagesStreaming(model)],
-      ["tool loop", () => toolLoop(model)],
-      ["multi-turn memory", () => multiTurnMemory(model)],
-      ["large streaming", () => largeStreaming(model)],
-    ]
-    for (const [name, fn] of steps) {
+    for (const step of steps) {
       try {
-        await fn()
+        await step.run(model)
       } catch (error) {
-        bad(`[${model}] ${name} crashed`, String(error))
+        bad(`[${model}] ${step.name} crashed`, String(error))
       }
     }
   }

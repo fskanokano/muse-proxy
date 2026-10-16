@@ -8,6 +8,12 @@
 //   - step-5: minimal..max accepted; none -> upstream 400 ("Reasoning is
 //     mandatory for this endpoint and cannot be disabled"), clamped to
 //     minimal — same rule as space-bunny (re-probed 2026-10-10)
+//   - deepseek-v4.1-flash-free: the catalog documents low/high/max only, but
+//     the live edge answers 200 for every effort string (probed 2026-10-16,
+//     scripts/probe-deepseek-routing.ts with PROBE_EFFORTS=1) and keeps
+//     emitting reasoning_content even for none. The proxy therefore advertises
+//     low/high/max, forwards those verbatim, clamps none -> low and DROPS the
+//     rest (deepseek accepts them, but they are not documented capabilities).
 // This script drives the FULL proxy stack (not the raw upstream) to verify:
 //   1. /v1/models advertises reasoning + reasoning_levels per model
 //   2. mimo with effort=high completes (field tolerated & dropped)
@@ -17,7 +23,9 @@
 //   5. step-5 at minimal / high / max each completes end-to-end, and effort
 //      none is clamped to minimal (the upstream 400s on none — reasoning is
 //      mandatory)
-//   6. muse effort=high unaffected (regression)
+//   6. deepseek at low / high / max each completes; none clamps to low and
+//      the undocumented levels are dropped rather than forwarded
+//   7. muse effort=high unaffected (regression)
 
 import * as http from "node:http"
 import { handleChatRequest } from "../api/chat"
@@ -125,10 +133,12 @@ console.log("\n[1] /v1/models reasoning metadata")
   const mimo = byId.get("mimo-v2.6-flash-free")
   const bunny = byId.get("space-bunny-free")
   const step5 = byId.get("step-5-preview-free")
+  const deepseek = byId.get("deepseek-v4.1-flash-free")
   const muse = byId.get("muse-spark-1.3-contributor-free")
   expect(mimo?.reasoning === true && Array.isArray(mimo?.reasoning_levels) && mimo!.reasoning_levels!.length === 0, "mimo reasoning=true, no levels", JSON.stringify({ reasoning: mimo?.reasoning, levels: mimo?.reasoning_levels }))
   expect(bunny?.reasoning === true && bunny!.reasoning_levels!.join(",") === "minimal,low,medium,high,xhigh,max", "space-bunny minimal..max", JSON.stringify(bunny?.reasoning_levels))
   expect(step5?.reasoning === true && step5!.reasoning_levels!.join(",") === "minimal,low,medium,high,xhigh,max", "step-5 minimal..max", JSON.stringify(step5?.reasoning_levels))
+  expect(deepseek?.reasoning === true && deepseek!.reasoning_levels!.join(",") === "low,high,max", "deepseek low/high/max", JSON.stringify(deepseek?.reasoning_levels))
   expect(muse?.reasoning === true && muse!.reasoning_levels!.join(",") === "none,minimal,low,medium,high,xhigh", "muse none..xhigh", JSON.stringify(muse?.reasoning_levels))
 }
 
@@ -156,7 +166,17 @@ for (const level of ["none", "minimal", "high", "max"]) {
   expect(r.ok, `step-5 effort=${level} completes with 144`, r.content.slice(0, 60))
 }
 
-console.log("\n[6] muse effort=high regression")
+console.log("\n[6] deepseek effort levels end-to-end (none clamped to low, undocumented levels dropped)")
+for (const level of ["low", "high", "max"]) {
+  const r = await chatWithEffort("deepseek-v4.1-flash-free", level)
+  expect(r.ok, `deepseek effort=${level} completes with 144`, r.content.slice(0, 60))
+}
+for (const level of ["none", "minimal", "medium", "xhigh"]) {
+  const r = await chatWithEffort("deepseek-v4.1-flash-free", level)
+  expect(r.ok, `deepseek effort=${level} completes with 144`, r.content.slice(0, 60))
+}
+
+console.log("\n[7] muse effort=high regression")
 {
   const r = await chatWithEffort("muse-spark-1.3-contributor-free", "high")
   expect(r.ok, "muse effort=high completes with 144", r.content.slice(0, 60))

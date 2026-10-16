@@ -101,8 +101,9 @@ export async function handleOaCompatUpstream(
         "x-opencode-session-id": downstream.identity.sessionId,
         "x-session-affinity": downstream.identity.sessionId,
         "x-session-id": downstream.identity.sessionId,
-        // The 2.0.29 client does NOT send x-opencode-request, and re-adding the
-        // header trips the free-tier gate (403). The msg_ id stays local-only.
+        // The v2 client (2.0.29/2.0.30) does NOT send x-opencode-request, and
+        // re-adding the header trips the free-tier gate (403). The msg_ id
+        // stays local-only.
 
         "x-opencode-client": OPENCODE_CLIENT,
         "x-opencode-project": OPENCODE_PROJECT_ID,
