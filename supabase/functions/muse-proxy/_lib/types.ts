@@ -71,6 +71,8 @@ export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high"
 //     space-bunny; confirmed 200 on the real edge 2026-10-10)
 //   - deepseek-v4.1-flash-free         -> "oa-compat" (probed 2026-10-16:
 //     /inference/v1/responses 400 ModelProtocolUnsupported, chat/completions 200)
+//   - glm-5.3-flash-free               -> "oa-compat" (probed 2026-10-16:
+//     /inference/v1/responses 400 ModelProtocolUnsupported, chat/completions 200)
 // The muse paths (types.ts + lower*.ts + chat-upstream-less handlers) must
 // stay untouched; new models therefore route through a dedicated converter
 // (_lib/chat-upstream.ts) while muse keeps using the Responses upstream.
@@ -79,6 +81,7 @@ export const MODEL_MIMO = "mimo-v2.6-flash-free"
 export const MODEL_SPACE_BUNNY = "space-bunny-free"
 export const MODEL_STEP5 = "step-5-preview-free"
 export const MODEL_DEEPSEEK = "deepseek-v4.1-flash-free"
+export const MODEL_GLM = "glm-5.3-flash-free"
 /** 实验模型: 与 muse 同一上游, 但启用代理层 goal 自动续轮 (见 _lib/goal.ts)。 */
 export const MODEL_GOAL = "muse-spark-1.3-contributor-goal"
 
@@ -188,6 +191,30 @@ const DEEPSEEK_INFO: ModelInfo = {
   maxOutputTokens: 32_000,
   efforts: ["low", "high", "max"],
 }
+// models.opencode.ai catalog (opencode/glm-5.3-flash-free, read 2026-10-16):
+// family "glm-flash", release 2026-08-26, attachment + tool_call +
+// structured_output + temperature true, reasoning_options
+// [{type:"effort", values:["low","high","max"]}], interleaved field
+// `reasoning_content`, modalities input text/image/video/pdf, limit context
+// 200,000 / output 32,000, cost 0/0/0 (canonical id zhipuai/glm-5.3-flash).
+// Live-probed 2026-10-16 (scripts/probe-deepseek-routing.ts glm-5.3-flash-free):
+//   - format is oa-compat ONLY — `/inference/v1/chat/completions` 200,
+//     `/inference/v1/responses` 400 `ModelProtocolUnsupported`
+//     ("Model does not support this protocol.").
+//   - thinking streams on `delta.reasoning_content`.
+//   - every effort string is tolerated (200) but the catalog documents only
+//     low/high/max, so the proxy advertises and forwards exactly those and
+//     `clampEffortForModel` drops the rest (none clamps to low).
+const GLM_INFO: ModelInfo = {
+  id: MODEL_GLM,
+  name: "GLM-5.3-Flash Free",
+  upstream: "oa-compat",
+  description:
+    "Native multimodal GLM model for efficient coding and long-horizon agent tasks (free tier). Thinking streams as reasoning_content; effort levels low/high/max.",
+  contextWindow: 200_000,
+  maxOutputTokens: 32_000,
+  efforts: ["low", "high", "max"],
+}
 // 实验模型: 与 muse 同一上游 (upstream responses 格式, 32K 输出),
 // 区别仅在于门面为其启用 goal 自动续轮: 无工具干净收尾时先过 judge,
 // 判未完成则自动续一轮 (cap 见 MP_GOAL_MAX_ROUNDS)。上游永远收到 muse id。
@@ -210,6 +237,7 @@ export const MODELS: Record<string, ModelInfo> = {
   [MODEL_SPACE_BUNNY]: SPACE_BUNNY_INFO,
   [MODEL_STEP5]: STEP5_INFO,
   [MODEL_DEEPSEEK]: DEEPSEEK_INFO,
+  [MODEL_GLM]: GLM_INFO,
   [MODEL_GOAL]: GOAL_INFO,
 }
 
@@ -245,6 +273,7 @@ export function resolveModel(requested: unknown): ModelInfo {
   const normalized = requested.toLowerCase()
   if (normalized.startsWith("mimo")) return MIMO_INFO
   if (normalized.startsWith("deepseek")) return DEEPSEEK_INFO
+  if (normalized.startsWith("glm")) return GLM_INFO
   if (normalized.includes("space-bunny")) return SPACE_BUNNY_INFO
   if (normalized.includes("step-5") || normalized.includes("step5")) return STEP5_INFO
   if (normalized.includes("muse")) return MUSE_INFO

@@ -11,24 +11,26 @@
   - `space-bunny-free` → `POST https://opencode.ai/inference/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游 401 `ModelError: not supported for format openai`)
   - `step-5-preview-free` → `POST https://opencode.ai/inference/v1/chat/completions`(oa-compat,同 space-bunny)
   - `deepseek-v4.1-flash-free` → `POST https://opencode.ai/inference/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游 400 `ModelProtocolUnsupported: Model does not support this protocol`,2026-10-16 探针)
+  - `glm-5.3-flash-free` → `POST https://opencode.ai/inference/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游 400 `ModelProtocolUnsupported: Model does not support this protocol`,2026-10-16 探针)
 - **鉴权**:`Authorization: Bearer $PROXY_API_KEY` 或 `x-api-key: $PROXY_API_KEY`(三个端点共用同一鉴权逻辑)。**未设置 `PROXY_API_KEY` 环境变量时,所有端点一律返回 401(fail-closed),不存在开放模式**
 - **免费模型**:上游 API key 固定为字面量 `public`,匿名免费层按 IP 限额,无需注册
-- **模型路由**(`supabase/functions/muse-proxy/_lib/types.ts` 的 `resolveModel`):显式匹配 `mimo*`/`deepseek*`/`space-bunny*`/`step-5*`/`muse*` 前缀与完整 id,其余任意 model id 沿用历史行为回落 muse;三个端点对同一 model id 语义一致
+- **模型路由**(`supabase/functions/muse-proxy/_lib/types.ts` 的 `resolveModel`):显式匹配 `mimo*`/`deepseek*`/`glm*`/`space-bunny*`/`step-5*`/`muse*` 前缀与完整 id,其余任意 model id 沿用历史行为回落 muse;三个端点对同一 model id 语义一致
 - **思考强度**:逐档位实测上游接受度(2026-09-24,`scripts/probe-reasoning-efforts.ts`),`/v1/models` 每个模型暴露 `reasoning` + `reasoning_levels`:
   - `muse-spark-1.3-contributor-free`:`none/minimal/low/medium/high/xhigh`(`max` 上游 400);Anthropic 门面的 `thinking.budget_tokens` 档位映射不变
   - `mimo-v2.6-flash-free`:reasoning **恒开**,`reasoning_effort` 上游容忍但无效,故不暴露档位、不下发该字段
   - `space-bunny-free`:`minimal/low/medium/high/xhigh/max`(目录外还多接受 `minimal`);请求 `none` 会被钳制为 `minimal`(直接转发上游 400);Anthropic 门面 `thinking:{type:"disabled"}` 同样钳制为 `minimal`
   - `step-5-preview-free`:`minimal/low/medium/high/xhigh/max`(与 space-bunny 同规则;上游 `none` 400 "Reasoning is mandatory for this endpoint and cannot be disabled")
   - `deepseek-v4.1-flash-free`:`low/high/max`(上游目录 `reasoning_options` 原样;实测任意档位上游都 200,但未文档化的档位代理**丢弃**而非猜测转发,`none` 钳制为 `low`)
+  - `glm-5.3-flash-free`:`low/high/max`(同 deepseek 规则:目录档位原样转发,未文档化档位丢弃,`none` 钳制为 `low`)
   - 钳制逻辑集中在 `clampEffortForModel`(`supabase/functions/muse-proxy/_lib/types.ts`),三个门面共用
 
 ```
 client ──chat/completions──▶ muse-proxy ─┬─lower──▶ opencode zen /v1/responses      (muse)
-        ◀──SSE chunks────               └─chat-upstream──▶ /v1/chat/completions    (mimo / space-bunny / step-5 / deepseek)
+        ◀──SSE chunks────               └─chat-upstream──▶ /v1/chat/completions    (mimo / space-bunny / step-5 / deepseek / glm)
                                                           └─raise─▶ 同一套 raise 层
 ```
 
-新增的 oa-compat 模型(`supabase/functions/muse-proxy/_lib/chat-upstream.ts` + `supabase/functions/muse-proxy/_lib/oa-compat.ts`):降级(Responses input → chat messages,含 function_call 轮次回放：连续并行调用合并成一条 `assistant(content=null, tool_calls=[...])`，拆散上游直接 400)与升格(chat-completions SSE → 规范 Responses 事件生命周期:`response.created` → `output_item.added` → 文本/思考 delta → `output_text.done`/`output_item.done` → `response.completed`),三个门面共享同一转换层,语义(muse 门的工具暴露、心跳、终止事件守护)与 muse 路径完全一致。对 OpenMinis 2026-09-02 源码 (`4ef2900`) 的 Responses 解析器还补齐了 function-call 的 `output_item.added` → `function_call_arguments.delta` → `function_call_arguments.done` → `output_item.done` 顺序,避免工具参数被严格客户端静默丢弃。`/v1/models` 目录已包含全部六个模型(含 goal 实验模型)。
+新增的 oa-compat 模型(`supabase/functions/muse-proxy/_lib/chat-upstream.ts` + `supabase/functions/muse-proxy/_lib/oa-compat.ts`):降级(Responses input → chat messages,含 function_call 轮次回放：连续并行调用合并成一条 `assistant(content=null, tool_calls=[...])`，拆散上游直接 400)与升格(chat-completions SSE → 规范 Responses 事件生命周期:`response.created` → `output_item.added` → 文本/思考 delta → `output_text.done`/`output_item.done` → `response.completed`),三个门面共享同一转换层,语义(muse 门的工具暴露、心跳、终止事件守护)与 muse 路径完全一致。对 OpenMinis 2026-09-02 源码 (`4ef2900`) 的 Responses 解析器还补齐了 function-call 的 `output_item.added` → `function_call_arguments.delta` → `function_call_arguments.done` → `output_item.done` 顺序,避免工具参数被严格客户端静默丢弃。`/v1/models` 目录已包含全部七个模型(含 goal 实验模型)。
 
 ## 部署:Supabase Edge Functions
 
@@ -125,7 +127,7 @@ bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印
 
 ## 模型目录
 
-代理当前服务 **6 个 opencode zen 免费模型**(5 个免费档 + 1 个 goal 实验模型)。`GET /v1/models`(`supabase/functions/muse-proxy/models.ts`)按 OpenAI models-list 格式返回下表全部模型,每个条目携带 `reasoning`(是否思考)与 `reasoning_levels`(支持的思考强度档位,空数组 = 无档位控制)元数据,另有 `context_window` / `max_output_tokens` / `owned_by: "opencode-zen"`。所有模型共享免费匿名层:上游 API key 固定为字面量 `public`,按 IP 限额,无需注册;三个 API 门面(chat / responses / messages)对同一 model id 语义一致。
+代理当前服务 **7 个 opencode zen 免费模型**(6 个免费档 + 1 个 goal 实验模型)。`GET /v1/models`(`supabase/functions/muse-proxy/models.ts`)按 OpenAI models-list 格式返回下表全部模型,每个条目携带 `reasoning`(是否思考)与 `reasoning_levels`(支持的思考强度档位,空数组 = 无档位控制)元数据,另有 `context_window` / `max_output_tokens` / `owned_by: "opencode-zen"`。所有模型共享免费匿名层:上游 API key 固定为字面量 `public`,按 IP 限额,无需注册;三个 API 门面(chat / responses / messages)对同一 model id 语义一致。
 
 | 模型 ID | 名称 | 上游格式(出站路由) | 上下文窗口 | 最大输出 | 思考 | 思考强度档位 |
 |---|---|---|---|---|---|---|
@@ -134,6 +136,7 @@ bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印
 | `space-bunny-free` | Space Bunny Free | `oa-compat` → `POST https://opencode.ai/inference/v1/chat/completions` | 1,048,576 | 32,000 | ✅ 恒开 | `minimal / low / medium / high / xhigh / max`(`none` 钳制为 `minimal`,直接转发上游 400) |
 | `step-5-preview-free` | Step 5 Preview Free | `oa-compat` → `POST https://opencode.ai/inference/v1/chat/completions` | 1,000,000 | 32,000 | ✅ 必开 | `minimal / low / medium / high / xhigh / max`(`none` 钳制为 `minimal`,上游 400 "Reasoning is mandatory") |
 | `deepseek-v4.1-flash-free` | DeepSeek V4.1 Flash Free | `oa-compat` → `POST https://opencode.ai/inference/v1/chat/completions` | 200,000 | 32,000 | ✅ | `low / high / max`(`none` 钳制为 `low`;其余未文档化档位丢弃) |
+| `glm-5.3-flash-free` | GLM-5.3-Flash Free | `oa-compat` → `POST https://opencode.ai/inference/v1/chat/completions` | 200,000 | 32,000 | ✅ | `low / high / max`(`none` 钳制为 `low`;其余未文档化档位丢弃) |
 | `muse-spark-1.3-contributor-goal` | Muse Spark 1.3 Contributor Goal | `responses`(同 muse,上游 id 仍发 muse) | 1,048,576 | 32,000 | ✅ | `none / minimal / low / medium / high / xhigh`(同 muse,另加 goal 自动续轮) |
 
 ### muse-spark-1.3-contributor-free(默认模型)
@@ -177,22 +180,31 @@ bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印
 - **能力**:工具调用、图片输入(`attachment`)、`temperature`、结构化输出均可用;`context 200,000` / `output 32,000`(`models.opencode.ai/api.json` 的 `opencode/deepseek-v4.1-flash-free`)。
 - **定义处**:`supabase/functions/muse-proxy/_lib/types.ts` 的 `DEEPSEEK_INFO`。
 
-> 上表的档位接受度均为逐档位实测结论(muse/mimo/space-bunny 2026-09-24 起、step-5 2026-10-10、deepseek 2026-10-16);路由与钳制逻辑集中在 `supabase/functions/muse-proxy/_lib/types.ts`(`resolveModel` / `clampEffortForModel`),三个门面共用,新增模型时先更新 `MODELS` 目录再跑 `bun run smoke:newmodels` 与 `bun run smoke:efforts`。
+### glm-5.3-flash-free
+
+- **定位**:GLM-5.3-Flash,原生多模态 GLM(`text/image/video/pdf` 输入),面向高效编码与长时程 agent 任务(免费层,catalog `release_date` 2026-08-26)。
+- **别名**:`model id 以 "glm" 开头(大小写不敏感)`即匹配——包含 zen 付费目录名(`glm-5.3-flash`、`glm-5`、`glm-4.7` 等)与旧免费名(`glm-5-free`/`glm-4.7-free`),全部由免费 GLM-5.3-Flash 变体服务(同 mimo/deepseek 的处理方式)。
+- **思考**:流式为 `delta.reasoning_content`(catalog 的 `interleaved.field` 原样;`OaCompatRaiser` 同时兼容 `reasoning`);档位取 catalog 的 `reasoning_options` = `low/high/max`。
+- **路由格式**:`oa-compat`(chat completions)且**仅此一种**——2026-10-16 探针(`scripts/probe-deepseek-routing.ts glm-5.3-flash-free`)实测 `/inference/v1/responses` 返回 400 `ModelProtocolUnsupported: Model does not support this protocol`,同一 body 打到 `/inference/v1/chat/completions` 返回 200。
+- **能力**:工具调用、图片输入(`attachment`)、`temperature`、结构化输出均可用;`context 200,000` / `output 32,000`(`models.opencode.ai/api.json` 的 `opencode/glm-5.3-flash-free`;目录还带 `canonical_model_id: zhipuai/glm-5.3-flash`)。
+- **定义处**:`supabase/functions/muse-proxy/_lib/types.ts` 的 `GLM_INFO`。
+
+> 上表的档位接受度均为逐档位实测结论(muse/mimo/space-bunny 2026-09-24 起、step-5 2026-10-10、deepseek/glm 2026-10-16);路由与钳制逻辑集中在 `supabase/functions/muse-proxy/_lib/types.ts`(`resolveModel` / `clampEffortForModel`),三个门面共用,新增模型时先更新 `MODELS` 目录再跑 `bun run smoke:newmodels` 与 `bun run smoke:efforts`。
 
 ## 快速开始
 
 ```bash
 bun install            # 或 npm install
-bun run test           # 206 个单元/集成/沙箱端到端测试(mock 上游,无需联网)
+bun run test           # 207 个单元/集成/沙箱端到端测试(mock 上游,无需联网)
 bun run serve:edge     # 无 Docker 运行 Edge Function(Deno,$PORT,默认 8788)
 bun run smoke:edge     # Edge Function 真实上游 HTTP 套件(需先 serve:edge)
 bun run deploy:functions # supabase functions deploy muse-proxy
 bun run smoke          # 真实连通性冒烟(需联网,验证 stream:false 与 stream:true)
 bun run smoke:responses # /v1/responses 真实上游全功能冒烟(需联网,7 项 36 检查)
 bun run smoke:messages  # /v1/messages 真实上游全功能冒烟(需联网,8 项任务)
-bun run smoke:newmodels # oa-compat 模型 × 三门面全链路真实上游冒烟(需联网,9 项任务 × 4 模型 + muse 回归)
-                       #   矩阵较大,可分片跑:bun run smoke:newmodels deepseek-v4.1-flash-free --steps=chat,chat-stream,responses,responses-stream
-bun run smoke:efforts  # 思考强度档位真实上游冒烟:/v1/models 元数据 + 5 模型档位端到端 + none 钳制
+bun run smoke:newmodels # oa-compat 模型 × 三门面全链路真实上游冒烟(需联网,9 项任务 × 5 模型 + muse 回归)
+                       #   矩阵较大,可分片跑:bun run smoke:newmodels glm-5.3-flash-free --steps=chat,chat-stream,responses,responses-stream
+bun run smoke:efforts  # 思考强度档位真实上游冒烟:/v1/models 元数据 + 6 模型档位端到端 + none 钳制
 bun run smoke:tools    # agent 工具循环真实上游冒烟:3 模型 × 3 门面,流式 tool call → 执行 → 回传 → 结果落地
 bun run smoke:openminis # OpenMinis file_write 真实上游探针:3 门面 × 5 个参数的全量回放 + 模型生成工具调用
 bun run eval           # 完整 agent 评测:xhigh 思考 + web_search 工具循环 + 3 轮多轮对话
@@ -492,9 +504,9 @@ bun run test      # 206/206(test/tools.test.ts 钉住别名原语,test/alias-dow
 bun run typecheck # tsc --noEmit 通过
 ```
 
-## 7. 2026-10-16 复核:源码再搬家 + 新模型接入(deepseek-v4.1-flash-free)
+## 7. 2026-10-16 复核:源码再搬家 + 新模型接入(deepseek-v4.1-flash-free / glm-5.3-flash-free)
 
-这一轮上游**没有**升级门槛(指纹一字未改),但做了三件事:重拉 opencode 源码、同步版本号、接入新的免费模型。
+这一轮上游**没有**升级门槛(指纹一字未改),但做了三件事:重拉 opencode 源码、同步版本号、接入新的免费模型(同一天两个:deepseek 见 7.2/7.3,glm 见 7.5)。
 
 ### 7.1 重拉源码后发现的变化
 
@@ -546,6 +558,37 @@ bun run smoke:efforts                                               # 22/22:含 
 | `egress` | 本机常驻(Docker) | 额外 `server/`(出口 IP 轮询)+ `admin-web/` | `supabase/` 树同源,直接对齐 |
 
 > 切分支后发现“模型消失了”,先对 `git diff origin/<分支>..<分支> -- '*types.ts'`,确认目录同步到位再怀疑上游。
+
+### 7.5 同轮第二个模型:glm-5.3-flash-free
+
+按 7.2 的四步原样再走一遍(新模型入目录流程已被第二次验证,四个改动点一个不多):
+
+1. **读目录**:`opencode/glm-5.3-flash-free` —— family `glm-flash`、`release_date` 2026-08-26、`reasoning_options [{type:"effort",values:["low","high","max"]}]`、`interleaved.field: "reasoning_content"`、`attachment/tool_call/structured_output/temperature` 均 true、输入 `text/image/video/pdf`、`limit 200000/32000`、cost 全 0。
+2. **探路由**:`bun run scripts/probe-deepseek-routing.ts glm-5.3-flash-free` → oa-compat 200(`text="PONG"`,思考走 `reasoning_content`)/ responses 400 `ModelProtocolUnsupported`;`PROBE_EFFORTS=1` 下 `none..max` 七档全部 200(与 deepseek 同形),但目录只写 `low/high/max`,故代理只转发这三档。
+3. **写目录**:`supabase/functions/muse-proxy/_lib/types.ts` 新增 `MODEL_GLM` / `GLM_INFO`、`MODELS` 加一行、`resolveModel` 加 `glm*` 别名(大小写不敏感,含付费/旧免费 glm id);`models.ts` 的 `REASONING_MODELS` 加 id。
+4. **测试/脚本**:`test/chat-upstream.test.ts`(档位钳制 + 别名 + 目录顺序 + `reasoning_levels`)与 `test/router.test.ts`(目录顺序)同步;`scripts/smoke-newmodels.ts` 的 `MODELS`、`scripts/smoke-efforts.ts` 的档位矩阵与元数据断言均加 glm。
+
+三个门面、上游转换层(`chat-upstream.ts` / `oa-compat.ts`)、指纹(UA/头/工具)一律不动:glm 与 deepseek 同属 oa-compat 路径,复用同一套降级/升格。
+
+验证(真实上游):
+
+```bash
+bun run test                                            # 207/207
+bun run typecheck                                       # tsc --noEmit 通过
+bun run scripts/probe-deepseek-routing.ts glm-5.3-flash-free   # oa-compat 200 / responses 400
+PROBE_EFFORTS=1 bun run scripts/probe-deepseek-routing.ts glm-5.3-flash-free   # none..max 七档均 200
+bun run smoke:newmodels glm-5.3-flash-free --steps=chat,chat-stream,responses,responses-stream
+bun run smoke:newmodels glm-5.3-flash-free --steps=messages,messages-stream,tools,memory
+bun run smoke:newmodels glm-5.3-flash-free --steps=large       # 各轮内附 muse 回归
+bun run smoke:efforts                                          # 含 glm 全档位
+```
+
+实测记录(2026-10-16,真实上游):
+
+- `smoke:newmodels glm-5.3-flash-free` 九步全过(chat / chat-stream / responses / responses-stream / messages / messages-stream / tools / memory / large,每轮含 muse 回归)。免费层按 IP 限额,**连续快速调用会间歇 429**(`upstream_rate_limit`),所以按 `--steps=` 分片跑并在片间留出间隔;429 重跑即绿,不修改/放宽断言。
+- `smoke:efforts` 的 mimo / space-bunny / deepseek / glm / muse 档位与元数据断言全绿(glm 七档 + `none`→`low` 全过);`step-5-preview-free` 四例 FAIL 属上游侧:该限时预览模型在 zen 边缘已直接 400 `Upstream request failed: Model is unavailable.`(两种格式都是,`scripts/probe-deepseek-routing.ts step-5-preview-free` 裸探针可复现),与本次改动无关,断言保持原样以如实暴露上游状态。
+
+三线同步同 7.4:egress / supabase / main 的 `_lib/types.ts` + `models.ts` + 测试 + 脚本 + README 一起落地。
 
 ## 8. 下次上游再更新时的排查清单(Cheat Sheet)
 

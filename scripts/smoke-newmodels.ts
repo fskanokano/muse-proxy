@@ -1,5 +1,6 @@
 // Real end-to-end smoke for the new free models (mimo-v2.6-flash-free,
-// space-bunny-free, step-5-preview-free, deepseek-v4.1-flash-free) across all
+// space-bunny-free, step-5-preview-free, deepseek-v4.1-flash-free,
+// glm-5.3-flash-free) across all
 // three facades against the REAL opencode zen upstream (network required).
 // Usage: bun run smoke:newmodels [model ...] [--steps=chat,chat-stream,...]
 //   - no model arg  -> every model below
@@ -13,7 +14,7 @@
 // completions). This script boots the same local server used by smoke:messages
 // (all three facades on one port) and proves, over real HTTP with the real
 // free-tier fingerprint:
-//   per model (mimo + space-bunny + step-5):
+//   per model (mimo + space-bunny + step-5 + deepseek + glm):
 //     1. chat completions non-streaming (aggregated chat.completion + usage)
 //     2. chat completions streaming (SSE chunks, [DONE], model id echoed)
 //     3. responses non-streaming (aggregated response object + output_text)
@@ -40,6 +41,7 @@ const MODELS = [
   "space-bunny-free",
   "step-5-preview-free",
   "deepseek-v4.1-flash-free",
+  "glm-5.3-flash-free",
 ]
 
 let passed = 0
