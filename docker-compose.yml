@@ -20,8 +20,8 @@ services:
       - PROXY_API_KEY=${PROXY_API_KEY:-}
       - MP_ADMIN_PASSWORD=${MP_ADMIN_PASSWORD:-}
       - MP_INTERNAL_KEY=${MP_INTERNAL_KEY:-}
-      # goal 自动续轮上限 (0-10, 缺省 2; 0 = goal 模型与 muse 行为完全一致)
-      - MP_GOAL_MAX_ROUNDS=${MP_GOAL_MAX_ROUNDS:-2}
+      # goal 自动续轮上限 (0-1000, 缺省 1000; 0 = goal 模型与 muse 行为完全一致)
+      - MP_GOAL_MAX_ROUNDS=${MP_GOAL_MAX_ROUNDS:-1000}
       - MP_DATA_DIR=/data
     volumes:
       - ./data:/data

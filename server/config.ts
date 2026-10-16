@@ -11,11 +11,12 @@ export const env = {
   adminPassword: process.env.MP_ADMIN_PASSWORD || "",
   /** 网关子系统内部钥 (与网关 MP_INTERNAL_KEY 一致; 为空则内部通道关闭)。 */
   internalKey: process.env.MP_INTERNAL_KEY || "",
-  /** goal 自动续轮上限 (0-10, 缺省 2, 0 = 与 muse 行为完全一致)。 */
+  /** goal 自动续轮上限 (0-1000, 缺省 1000, 0 = 与 muse 行为完全一致)。
+   * 注意: 每次续轮重发完整历史, 上限仅防死循环; 实际受网关 600s 超时与 token 成本约束。 */
   goalMaxRounds: (() => {
-    const n = Number(process.env.MP_GOAL_MAX_ROUNDS ?? "2");
-    if (!Number.isInteger(n) || n < 0) return 2;
-    return Math.min(n, 10);
+    const n = Number(process.env.MP_GOAL_MAX_ROUNDS ?? "1000");
+    if (!Number.isInteger(n) || n < 0) return 1000;
+    return Math.min(n, 1000);
   })(),
   dataDir: process.env.MP_DATA_DIR || path.resolve(process.cwd(), "data"),
   /** 管理后台静态目录 (admin-web 构建产物; 为空则自动探测)。 */
