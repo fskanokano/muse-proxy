@@ -159,7 +159,9 @@ export interface LowerChatUpstreamOptions {
 export function lowerChatUpstream(options: LowerChatUpstreamOptions): ChatUpstreamRequest {
   const { model, input, tools } = options
   const request: ChatUpstreamRequest = {
-    model: model.id,
+    // Deprecation aliases (muse/goal -> deepseek) keep their client-facing id
+    // but ship the live model's id on the wire.
+    model: model.upstreamId ?? model.id,
     messages: lowerInputToMessages(input),
     stream: true,
     stream_options: { include_usage: true },
@@ -309,6 +311,19 @@ export class OaCompatRaiser {
   handle(chunk: Record<string, unknown>): ResponsesEvent[] {
     const events: ResponsesEvent[] = []
     this.ensureStarted(events)
+    // In-band upstream error (OpenAI-compatible backends send
+    // `data: {"error": {...}}` mid-stream): raise it as the muse-era error
+    // event so both facades treat provider faults identically.
+    if (typeof chunk.error === "object" && chunk.error !== null && !Array.isArray(chunk.error)) {
+      const err = chunk.error as Record<string, unknown>
+      return [
+        {
+          type: "error",
+          code: typeof err.code === "string" ? err.code : undefined,
+          message: typeof err.message === "string" ? err.message : "unknown upstream error",
+        },
+      ]
+    }
     if (typeof chunk.usage === "object" && chunk.usage !== null) {
       this.usage = chunk.usage as Record<string, unknown>
     }
@@ -377,27 +392,39 @@ export class OaCompatRaiser {
   }
 
   /** Terminal events when the oa-compat stream ends ([DONE] or EOF). */
-  finishStream(): ResponsesEvent[] {
+  finishStream(reason: "done" | "eof" = "done"): ResponsesEvent[] {
     const events: ResponsesEvent[] = []
     if (!this.started) {
       // Degenerate empty stream: still emit a well-formed lifecycle.
       this.ensureStarted(events)
     }
+    // Truncation guard: an EOF without a finish reason (and without the
+    // upstream's [DONE]) is a severed stream. Emitting response.completed
+    // here would flag truncated output as complete, so emit NO terminal and
+    // let each facade's guard surface 502/synthetic error instead. The
+    // aggregated mixed output the caller already streamed stays safe because
+    // it never gets a completion marker.
+    if (reason === "eof" && this.finish === null) return events
     this.closeMessage(events)
     events.push(...this.flushToolCalls())
+    // finish_reason "length" is the oa-compat signal for a token-capped turn;
+    // raise it as the spec's incomplete terminal so facades (and Clients that
+    // branch on incomplete_details) keep the muse-era max_output_tokens
+    // semantics instead of masquerading the cut-off as a clean completion.
+    const truncated = this.finish === "length"
     events.push({
-      type: "response.completed",
+      type: truncated ? "response.incomplete" : "response.completed",
       response: {
         id: this.responseId,
         object: "response",
         created_at: this.createdAt,
-        status: "completed",
+        status: truncated ? "incomplete" : "completed",
         model: this.model,
         output: [...this.outputItems.entries()]
           .sort(([a], [b]) => a - b)
           .map(([, item]) => item),
         error: null,
-        incomplete_details: null,
+        incomplete_details: truncated ? { reason: "max_output_tokens" } : null,
         usage: this.usage ? this.mapUsage(this.usage) : null,
       },
     })

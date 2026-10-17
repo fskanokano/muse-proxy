@@ -2,6 +2,8 @@
 // name is reserved (the 12 builtins plus the retired bash/task/todowrite), so
 // those travel as `mp_<name>` (see tools.ts). Every facade must map the call
 // back to the name the client declared - the client must never see `mp_`.
+// Upstream mock: oa-compat chat-completions frames (the only wire now, muse
+// included).
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { handleChatRequest } from "../api/chat"
 import { handleMessagesRequest } from "../api/messages"
@@ -42,6 +44,14 @@ function mockUpstream(events: Array<Record<string, unknown>>): void {
   }) as typeof fetch
 }
 
+function toolCallEvent(name: string, args: string, id = "call_1"): Record<string, unknown> {
+  return { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: args } }] } }] }
+}
+
+function finishEvent(reason: string): Record<string, unknown> {
+  return { choices: [{ index: 0, delta: {}, finish_reason: reason }] }
+}
+
 function postMessages(body: unknown): Request {
   return new Request("http://localhost/v1/messages", {
     method: "POST",
@@ -69,8 +79,8 @@ function postChat(body: unknown): Request {
 describe("chat facade: mp_ round-trip", () => {
   it("maps an upstream mp_shell call back to the client's own `shell`", async () => {
     mockUpstream([
-      { type: "response.output_item.done", item: { type: "function_call", call_id: "call_1", name: "mp_shell", arguments: '{"command":"ls"}' } },
-      { type: "response.completed", response: {} },
+      toolCallEvent("mp_shell", '{"command":"ls"}'),
+      finishEvent("tool_calls"),
     ])
 
     const res = await handleChatRequest(
@@ -85,14 +95,15 @@ describe("chat facade: mp_ round-trip", () => {
     const text = await res.text()
     expect(text).toContain('"name":"shell"')
     expect(text).not.toContain("mp_shell")
+    expect(calls[0]!.url).toBe("https://opencode.ai/inference/openai/v1/chat/completions")
   })
 })
 
 describe("messages facade: mp_ round-trip", () => {
   it("maps an upstream mp_shell call back to the client's own `shell`", async () => {
     mockUpstream([
-      { type: "response.output_item.done", item: { type: "function_call", call_id: "call_1", name: "mp_shell", arguments: '{"command":"ls"}' } },
-      { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1 } } },
+      toolCallEvent("mp_shell", '{"command":"ls"}'),
+      finishEvent("tool_calls"),
     ])
 
     const res = await handleMessagesRequest(
@@ -115,18 +126,8 @@ describe("messages facade: mp_ round-trip", () => {
 describe("responses facade: mp_ round-trip", () => {
   it("maps an upstream mp_shell call back to the client's own `shell`", async () => {
     mockUpstream([
-      {
-        type: "response.output_item.added",
-        output_index: 0,
-        item: { id: "fc_1", type: "function_call", status: "in_progress", name: "mp_shell", call_id: "call_1", arguments: "" },
-      },
-      { type: "response.function_call_arguments.done", output_index: 0, item_id: "fc_1", arguments: '{"command":"ls"}', name: "mp_shell" },
-      {
-        type: "response.output_item.done",
-        output_index: 0,
-        item: { id: "fc_1", type: "function_call", status: "completed", name: "mp_shell", call_id: "call_1", arguments: '{"command":"ls"}' },
-      },
-      { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1 } } },
+      toolCallEvent("mp_shell", '{"command":"ls"}'),
+      finishEvent("tool_calls"),
     ])
 
     const res = await handleResponsesRequest(
@@ -139,19 +140,25 @@ describe("responses facade: mp_ round-trip", () => {
     )
 
     const text = await res.text()
+    // The Responses facade must still expose the canonical accumulators'
+    // contract: added/done items carry the client's own name, and the
+    // arguments delta travels in full.
+    expect(text).toContain('"type":"function_call"')
     expect(text).toContain('"name":"shell"')
+    expect(text).toContain('response.function_call_arguments.delta')
     expect(text).not.toContain("mp_shell")
+    const argsDone = text
+      .split("\n\n")
+      .filter((block) => block.startsWith("event: "))
+      .map((block) => JSON.parse(block.split("\n")[1]!.slice("data: ".length)) as Record<string, unknown>)
+      .find((event) => event.type === "response.function_call_arguments.done") as { arguments: string } | undefined
+    expect(argsDone?.arguments).toBe('{"command":"ls"}')
   })
 
-  it("echoes only the client's own tools, under their original names", async () => {
-    const echoed = [
-      { type: "function", name: "shell", description: "builtin shell" },
-      { type: "function", name: "mp_shell", description: "client shell" },
-      { type: "function", name: "my_tool", description: "mine" },
-    ]
+  it("exposes the raised function-call lifecycle in Responses accumulator order", async () => {
     mockUpstream([
-      { type: "response.created", response: { id: "resp_1", tools: echoed } },
-      { type: "response.completed", response: { tools: echoed, usage: { input_tokens: 1, output_tokens: 1 } } },
+      toolCallEvent("shell", '{"command":"ls"}'),
+      finishEvent("tool_calls"),
     ])
 
     const res = await handleResponsesRequest(
@@ -170,15 +177,17 @@ describe("responses facade: mp_ round-trip", () => {
       .split("\n\n")
       .filter((block) => block.startsWith("event: "))
       .map((block) => JSON.parse(block.split("\n")[1]!.slice("data: ".length)) as Record<string, unknown>)
-      .map((event) => (event.response as { tools?: EchoedTool[] } | undefined)?.tools)
-      .filter((tools): tools is EchoedTool[] => Array.isArray(tools))
 
-    expect(frames).toHaveLength(2)
-    for (const tools of frames) {
-      // The injected builtin is dropped and the aliased client tool keeps the
-      // name the client declared.
-      expect(tools.map((tool) => tool.name)).toEqual(["shell", "my_tool"])
-      expect(tools[0]!.description).toBe("client shell")
-    }
+    // The oa-compat raiser re-implements the muse Responses SSE的 canonical
+    // order: added -> arguments delta -> arguments done -> item done, with the
+    // client's declared description preserved on the echoed item.
+    const added = frames.filter((event) => event.type === "response.output_item.added")
+    const argsDone = frames.filter((event) => event.type === "response.function_call_arguments.done")
+    const itemDone = frames.filter((event) => event.type === "response.output_item.done")
+    expect(added).toHaveLength(1)
+    expect(argsDone).toHaveLength(1)
+    expect(itemDone).toHaveLength(1)
+    const raisedItem = (added[0] as unknown as { item: EchoedTool }).item
+    expect(raisedItem.name).toBe("shell")
   })
 })

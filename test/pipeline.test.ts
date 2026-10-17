@@ -83,12 +83,10 @@ describe("handleChatRequest", () => {
   it("streams chat chunks with heartbeats preserved and [DONE] terminator", async () => {
     mockFetch(
       sseResponse([
-        { type: "response.output_text.delta", delta: "he" },
-        { type: "response.output_text.delta", delta: "llo" },
-        {
-          type: "response.completed",
-          response: { id: "resp_x", usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 } },
-        },
+        { choices: [{ index: 0, delta: { content: "he" } }] },
+        { choices: [{ index: 0, delta: { content: "llo" } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } },
       ]),
     )
     const res = await handleChatRequest(
@@ -110,50 +108,52 @@ describe("handleChatRequest", () => {
     expect((finish as { usage?: { total_tokens: number } }).usage?.total_tokens).toBe(5)
   })
 
-  it("sends the lowered request upstream with muse-specific options", async () => {
-    mockFetch(sseResponse([{ type: "response.completed", response: {} }]))
+  it("sends the lowered oa-compat chat request upstream for the muse alias", async () => {
+    mockFetch(sseResponse([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }]))
     await handleChatRequest(
       postRequest({ messages: [{ role: "user", content: "hi" }], max_tokens: 1000 }),
       ENV,
     )
     expect(calls).toHaveLength(1)
     const init = calls[0]!.init!
-    expect(calls[0]!.url).toBe("https://opencode.ai/inference/v1/responses")
+    expect(calls[0]!.url).toBe("https://opencode.ai/inference/openai/v1/chat/completions")
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer public")
     const body = JSON.parse(String(init.body)) as {
-      store: boolean
-      include: string[]
-      reasoning: { effort: string; summary: string }
-      max_output_tokens: number
+      model: string
+      reasoning_effort: string
+      max_tokens: number
       stream: boolean
-      tools: Array<{ name: string }>
+      stream_options: { include_usage: boolean }
+      tools: Array<{ function: { name: string } }>
       tool_choice: string
-      prompt_cache_key: string
     }
-    expect(body.store).toBe(false)
-    expect(body.include).toEqual(["reasoning.encrypted_content"])
-    expect(body.reasoning).toEqual({ effort: "high", summary: "auto" })
-    expect(body.max_output_tokens).toBe(1000)
+    // muse aliases onto deepseek on the oa-compat wire; effort is clamped to
+    // the deepseek whitelist and free-tier gating needs streaming.
+    expect(body.model).toBe("deepseek-v4.1-flash-free")
+    expect(body.reasoning_effort).toBe("high")
+    expect(body.max_tokens).toBe(1000)
     expect(body.stream).toBe(true)
-    // Free-tier body fingerprint: builtins always present, tool_choice auto,
-    // prompt_cache_key mirrors the session header.
-    expect(body.tools.map((t) => t.name)).toEqual([
+    expect(body.stream_options).toEqual({ include_usage: true })
+    // Free-tier body fingerprint: builtins always present, tool_choice auto.
+    expect(body.tools.map((t) => t.function.name)).toEqual([
       "edit", "glob", "grep", "question", "read", "shell", "skill", "subagent", "webfetch", "websearch", "write", "execute",
     ])
     expect(body.tool_choice).toBe("auto")
     const headers = init.headers as Record<string, string>
-    expect(body.prompt_cache_key).toBe(headers["x-opencode-session"])
+    expect(headers.authorization).toBe("Bearer public")
+    expect(headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
   })
 
   it("sends the full opencode client header fingerprint upstream", async () => {
-    mockFetch(sseResponse([{ type: "response.completed", response: {} }]))
+    mockFetch(sseResponse([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }]))
     await handleChatRequest(postRequest({ messages: [{ role: "user", content: "hi" }] }), ENV)
     const headers = calls[0]!.init!.headers as Record<string, string>
     // Mirrors the shipped CLI wire format (captured 2026-10-14, re-verified
-    // 2026-10-16 against 2.0.30):
+    // 2026-10-16 against 2.0.30, re-probed on the oa-compat mount after the
+    // 2.0.32 refresh):
     // `opencode/<channel>/<version>/<client>` — NOT the legacy v1
     // ai-sdk/provider-utils UA the 1.18.x binary emitted.
-    expect(headers["user-agent"]).toBe("opencode/latest/2.0.30/cli")
+    expect(headers["user-agent"]).toBe("opencode/latest/2.0.32/cli")
     expect(headers["x-opencode-client"]).toBe("cli")
     expect(headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
     // The shipped client sends no x-opencode-request; adding it back 403s.
@@ -174,7 +174,7 @@ describe("handleChatRequest", () => {
   })
 
   it("appends client tools after the builtin set and aliases reserved names", async () => {
-    mockFetch(sseResponse([{ type: "response.completed", response: {} }]))
+    mockFetch(sseResponse([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }]))
     await handleChatRequest(
       postRequest({
         messages: [{ role: "user", content: "hi" }],
@@ -187,22 +187,22 @@ describe("handleChatRequest", () => {
       ENV,
     )
     const body = JSON.parse(String(calls[0]!.init!.body)) as {
-      tools: Array<{ name: string; description: string }>
+      tools: Array<{ function: { name: string; description: string } }>
     }
-    const names = body.tools.map((t) => t.name)
+    const names = body.tools.map((t) => t.function.name)
     expect(names.slice(0, 12)).toEqual(["edit", "glob", "grep", "question", "read", "shell", "skill", "subagent", "webfetch", "websearch", "write", "execute"])
     expect(names).toContain("web_search")
     // the builtin entry ships verbatim and the client copy is appended as mp_shell
     expect(names.filter((n) => n === "shell")).toHaveLength(1)
-    expect(body.tools.find((t) => t.name === "shell")!.description).not.toBe("client shell")
-    expect(body.tools.find((t) => t.name === "mp_shell")!.description).toBe("client shell")
-    expect(body.tools.find((t) => t.name === "web_search")!.description).toBe("Search the web.")
+    expect(body.tools.find((t) => t.function.name === "shell")!.function.description).not.toBe("client shell")
+    expect(body.tools.find((t) => t.function.name === "mp_shell")!.function.description).toBe("client shell")
+    expect(body.tools.find((t) => t.function.name === "web_search")!.function.description).toBe("Search the web.")
   })
 
   it("forces tool_choice to auto regardless of what the client asks for", async () => {
     for (const tool_choice of ["none", "required", { type: "function", name: "web_search" }]) {
       // A consumed SSE Response body is locked; mint a fresh one per call.
-      mockFetch(sseResponse([{ type: "response.completed", response: {} }]))
+      mockFetch(sseResponse([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }]))
       await handleChatRequest(
         postRequest({ messages: [{ role: "user", content: "hi" }], tool_choice }),
         ENV,
@@ -215,9 +215,9 @@ describe("handleChatRequest", () => {
   it("mints fresh opencode ids per upstream call", async () => {
     // Each call gets a fresh SSE Response; a cached one would be locked
     // after its body stream is consumed by the first request.
-    mockFetch(sseResponse([{ type: "response.completed", response: {} }]))
+    mockFetch(sseResponse([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }]))
     await handleChatRequest(postRequest({ messages: [{ role: "user", content: "one" }] }), ENV)
-    mockFetch(sseResponse([{ type: "response.completed", response: {} }]))
+    mockFetch(sseResponse([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }]))
     await handleChatRequest(postRequest({ messages: [{ role: "user", content: "two" }] }), ENV)
     const first = calls[0]!.init!.headers as Record<string, string>
     const second = calls[1]!.init!.headers as Record<string, string>
@@ -231,13 +231,11 @@ describe("handleChatRequest", () => {
   it("aggregates a non-streaming completion", async () => {
     mockFetch(
       sseResponse([
-        { type: "response.reasoning_summary_text.delta", delta: "think" },
-        { type: "response.output_text.delta", delta: "ans" },
-        { type: "response.output_text.delta", delta: "wer" },
-        {
-          type: "response.completed",
-          response: { usage: { input_tokens: 5, output_tokens: 7, total_tokens: 12 } },
-        },
+        { choices: [{ index: 0, delta: { reasoning_content: "think" } }] },
+        { choices: [{ index: 0, delta: { content: "ans" } }] },
+        { choices: [{ index: 0, delta: { content: "wer" } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 } },
       ]),
     )
     const res = await handleChatRequest(
@@ -260,11 +258,8 @@ describe("handleChatRequest", () => {
   it("aggregates tool calls in a non-streaming completion", async () => {
     mockFetch(
       sseResponse([
-        {
-          type: "response.output_item.done",
-          item: { type: "function_call", call_id: "call_9", name: "echo", arguments: "{\"a\":1}" },
-        },
-        { type: "response.completed", response: {} },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_9", type: "function", function: { name: "echo", arguments: "{\"a\":1}" } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
       ]),
     )
     const res = await handleChatRequest(

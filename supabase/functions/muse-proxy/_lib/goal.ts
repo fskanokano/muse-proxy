@@ -1,14 +1,19 @@
 // 代理层 goal 自动续轮 (实验: 仅 muse-spark-1.3-contributor-goal 模型触发)。
 //
 // 触发条件 (必须同时满足, 缺一即原样放行):
-//  1. 上游以 response.completed 干净收尾 (incomplete/failed/error 照常透传, 不干预);
+//  1. 上游以终端事件干净收尾 (completed; incomplete/failed/error 照常透传, 不干预);
 //  2. 本轮零工具调用, 但请求里带了 tools (无 tools 的请求如标题生成天然豁免);
-//  3. 未超续轮上限 (MP_GOAL_MAX_ROUNDS, 默认 1000, 0 = 与 muse 行为完全一致);
+//  3. 未超续轮上限 (MP_GOAL_MAX_ROUNDS, 默认 1000, 0 = 与非 goal 模型行为完全一致);
 //  4. judge 判 CONTINUE (裁判即当前模型自身; 判 COMPLETE/判读失败/调用失败一律收尾)。
 //
-// 续轮做法: 原历史 + 本轮文本 assistant 项 + user nudge 项, 重新 POST 上游
-// (stream:true), 事件拼回同一条下游流 (中间终端事件全部吞掉, 只放行最终
-// 终端, 各门面自带的截断守卫因此不受影响)。usage 只反映最后一轮, 见 README。
+// 上游形态 (2026-10-17 起): muse 的 /responses 上游因弃用退役, goal 与 base
+// 模型一致走 oa-compat chat/completions 流式上游 (_lib/oa-compat.ts 注入闭包)。
+// 门禁要求上游 stream:true (stream:false 直接 403 FreeTierError), 所以 judge
+// 也走流式, 在本地聚合出纯文本后判 COMPLETE/CONTINUE。续轮做法:
+// 门面已 lower 好的 chat body 消息数组 + 本轮 assistant 文本 + user nudge,
+// 重新 POST (stream:true), 事件经同一 raise 层拼回同一条下游流 (中间终端
+// 事件全部吞掉, 只放行最终终端, 各门面自带的截断守卫因此不受影响)。
+// usage 只反映最后一轮, 见 README。
 //
 // 终止性审计 (每条路都通向 return):
 //  failed/error/incomplete 终端 -> 直接透传收尾; "done" 无终端 -> 收尾 (门面守卫兜底);
@@ -16,13 +21,8 @@
 //  每次 CONTINUE 消耗一轮 cap, cap 耗尽即收尾。单客户端请求的上游调用数
 //  上界 = 1 + cap*(judge + continuation), 默认 cap=1000 (实际受网关超时与成本约束先到)。
 
-import { parseUpstreamSse } from "./sse.ts";
-import {
-  MODEL_MUSE,
-  type ModelInfo,
-  type UpstreamInputItem,
-  type UpstreamTool,
-} from "./types.ts";
+import { lowerChatUpstream, type ChatUpstreamRequest } from "./chat-upstream.ts"
+import type { ModelInfo, UpstreamInputItem, UpstreamTool } from "./types.ts";
 
 export type GoalEvent = Record<string, unknown> | "done";
 
@@ -33,16 +33,22 @@ export interface GoalIdentity {
 
 export interface GoalCtx {
   model: ModelInfo;
-  /** 门面已 lower 好的上游 body 原型 (stream:true, 含 tools/reasoning, 续轮时只换 input)。 */
-  baseBody: Record<string, unknown>;
-  /** 当前轮的上游 input (续轮在此基础上追加)。 */
+  /** 首轮已 lower 好的 oa-compat 上游 body (stream:true, 含 tools/reasoning; 续轮只换 messages)。 */
+  baseBody: ChatUpstreamRequest;
+  /** 门面 lowered 的 input (responses 形状, judge 提取任务文案用)。 */
   input: UpstreamInputItem[];
   tools: UpstreamTool[];
-  /** 最多续轮数 (MP_GOAL_MAX_ROUNDS, 0-1000, 缺省 1000, 0 = 与 muse 行为完全一致)。 */
+  /** 最多续轮数 (MP_GOAL_MAX_ROUNDS, 0-1000, 缺省 1000, 0 = 与非 goal 行为完全一致)。 */
   maxRounds: number;
   identity: GoalIdentity;
-  /** 发往上游 responses 端点的原始 POST (门面闭包, 自带指纹头/signal)。 */
-  postUpstream: (body: Record<string, unknown>) => Promise<Response>;
+  /** 门面响应 id (chatcmpl/resp_/msg_), 续轮 raise 沿用以保持下游一致性。 */
+  callId: string;
+  created: number;
+  signal?: AbortSignal;
+  /** 发往 oa-compat 上游的原始 POST (闭包, 自带指纹头/signal)。 */
+  postChatUpstream: (body: ChatUpstreamRequest | Record<string, unknown>) => Promise<Response>;
+  /** 续轮事件流: oa-compat SSE -> 规范 Responses 事件 (同 facade id 的新 raiser)。 */
+  streamEvents: (body: ReadableStream<Uint8Array>) => AsyncGenerator<GoalEvent>;
 }
 
 const JUDGE_SYSTEM =
@@ -70,23 +76,37 @@ function firstUserText(input: UpstreamInputItem[]): string {
   return "(no user text found)";
 }
 
-function extractOutputText(body: unknown): string {
-  if (typeof body !== "object" || body === null) return "";
-  const output = (body as { output?: unknown }).output;
-  if (!Array.isArray(output)) return "";
-  const texts: string[] = [];
-  for (const item of output) {
-    if (typeof item !== "object" || item === null) continue;
-    const content = (item as { content?: unknown }).content;
-    if (!Array.isArray(content)) continue;
-    for (const part of content) {
-      if (typeof part === "object" && part !== null && (part as { type?: unknown }).type === "output_text") {
-        const t = (part as { text?: unknown }).text;
-        if (typeof t === "string") texts.push(t);
+// oa-compat SSE -> 纯文本聚合 (judge 用; 忽略 delta.reasoning_* 与 tool_calls)。
+async function judgeTextFromBody(body: ReadableStream<Uint8Array> | null): Promise<string> {
+  if (!body) return "";
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let out = "";
+  outer: while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newlineIndex: number;
+    while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).replace(/^\s/, "").replace(/\r$/, "");
+      if (payload.length === 0 || payload === "[DONE]") continue;
+      try {
+        const chunk = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: unknown } ; message?: { content?: unknown } }> };
+        const choice = chunk.choices?.[0];
+        const content = choice?.delta?.content ?? choice?.message?.content;
+        if (typeof content === "string") out += content;
+      } catch {
+        /* non-JSON frame */
       }
+      if (out.length > 4096) break outer;
     }
   }
-  return texts.join("\n");
+  reader.cancel().catch(() => {});
+  return out;
 }
 
 type Verdict = { verdict: "complete" | "continue"; reason: string };
@@ -97,48 +117,44 @@ async function judgeTurn(ctx: GoalCtx, turnText: string): Promise<Verdict> {
     return { verdict, reason };
   };
   const task = firstUserText(ctx.input);
-  const body = {
-    model: ctx.model.upstreamId ?? MODEL_MUSE,
-    input: [
-      { role: "system", content: JUDGE_SYSTEM },
-      {
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text:
-              `TASK: ${task}\n` +
-              `ASSISTANT LAST TURN: ${(turnText || "(empty)").slice(0, MAX_TURN_CHARS)}\n` +
-              `TOOLS AVAILABLE: ${ctx.tools.length}, TOOLS USED THIS TURN: 0`,
-          },
-        ],
-      },
-    ],
-    stream: false,
-    store: false,
-    reasoning: { effort: "minimal" },
-    tools: ctx.tools,
-    tool_choice: "auto",
-    max_output_tokens: 256,
+  // Free tier 门禁: 上游必须 stream:true (stream:false 一律 403 FreeTierError)。
+  // 下发完整内置工具集过闸, reasoning_effort 不发 (base 模型只认文档档位)。
+  const judgeBody: Record<string, unknown> = {
+    ...lowerChatUpstream({
+      model: ctx.model,
+      input: [
+        { role: "system", content: JUDGE_SYSTEM },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text:
+                `TASK: ${task}\n` +
+                `ASSISTANT LAST TURN: ${(turnText || "(empty)").slice(0, MAX_TURN_CHARS)}\n` +
+                `TOOLS AVAILABLE: ${ctx.tools.length}, TOOLS USED THIS TURN: 0`,
+            },
+          ],
+        },
+      ],
+      tools: ctx.tools,
+      maxOutputTokens: 256,
+    }),
     prompt_cache_key: ctx.identity.sessionId,
   };
   let res: Response;
   try {
-    res = await ctx.postUpstream(body);
+    res = await ctx.postChatUpstream(judgeBody);
   } catch (e) {
     return done("complete", `judge request failed: ${(e as Error)?.message ?? e}`);
   }
   if (!res.ok) {
-    try {
-      await res.text().catch(() => "");
-    } catch {
-      /* ignore */
-    }
+    await res.text().catch(() => "");
     return done("complete", `judge upstream status ${res.status}`);
   }
   let text = "";
   try {
-    text = extractOutputText(await res.json());
+    text = await judgeTextFromBody(res.body);
   } catch {
     return done("complete", "judge response unparseable");
   }
@@ -198,7 +214,6 @@ export async function* runGoalTurns(
   ctx: GoalCtx,
 ): AsyncGenerator<GoalEvent> {
   const cap = Number.isInteger(ctx.maxRounds) && ctx.maxRounds >= 0 ? Math.min(ctx.maxRounds, 1000) : 1000;
-  let input = ctx.input;
   let current: AsyncGenerator<GoalEvent> = first;
   let rounds = 0;
   for (;;) {
@@ -220,30 +235,30 @@ export async function* runGoalTurns(
     }
     rounds++;
     console.info(`[goal] turn ${rounds}/${cap}: no-tools completed, judge CONTINUE, continuing`);
-    input = [
-      ...input,
-      { role: "assistant", content: [{ type: "output_text", text: turn.text || "(previous turn produced no text)" }] },
-      {
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text:
-              `System note: your previous response ended without calling any tools, but the task is not complete. ` +
-              `Judge feedback: ${verdict.reason} Continue the task now by calling the appropriate tools. ` +
-              `Do not repeat summaries; proceed with tool calls.`,
-          },
-        ],
-      },
-    ];
+    // 续轮: chat 消息数组追加 assistant 文本轮 + user nudge, 其余 (tools/reasoning/参数) 保持首轮。
+    const baseMessages = ctx.baseBody.messages as Array<Record<string, unknown>>;
+    const body: Record<string, unknown> = {
+      ...ctx.baseBody,
+      messages: [
+        ...baseMessages,
+        { role: "assistant", content: turn.text || "(previous turn produced no text)" },
+        {
+          role: "user",
+          content:
+            `System note: your previous response ended without calling any tools, but the task is not complete. ` +
+            `Judge feedback: ${verdict.reason} Continue the task now by calling the appropriate tools. ` +
+            `Do not repeat summaries; proceed with tool calls.`,
+        },
+      ],
+    };
     let up: Response;
     try {
-      up = await ctx.postUpstream({ ...ctx.baseBody, input });
+      up = await ctx.postChatUpstream(body);
     } catch (e) {
       yield errorEvent(502, `goal continuation unreachable: ${(e as Error)?.message ?? e}`);
       return;
     }
-    if (!up.ok || !up.body) {
+    if (!up.ok || up.body === null) {
       let detail = `status ${up.status}`;
       try {
         detail = JSON.stringify(await up.json()).slice(0, 300);
@@ -253,6 +268,6 @@ export async function* runGoalTurns(
       yield errorEvent(up.status, `goal continuation rejected: ${detail}`);
       return;
     }
-    current = parseUpstreamSse(up.body) as AsyncGenerator<GoalEvent>;
+    current = ctx.streamEvents(up.body);
   }
 }

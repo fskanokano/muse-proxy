@@ -4,6 +4,14 @@ import { handleRequest, matchRoute, normalizePath } from "../supabase/functions/
 const ENV = { PROXY_API_KEY: "test-key" }
 const AUTH = { authorization: "Bearer test-key" }
 
+// oa-compat chat-completions frames: the only upstream wire every model
+// (including the muse alias) reaches now.
+const CHAT_EVENTS = [
+  { choices: [{ index: 0, delta: { content: "pong" } }] },
+  { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+  { choices: [], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } },
+]
+
 function sseResponse(events: Array<Record<string, unknown>>): Response {
   const lines = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")
   return new Response(lines + "data: [DONE]\n\n", {
@@ -77,10 +85,7 @@ describe("edge function path normalization", () => {
 
 describe("edge function dispatch", () => {
   it("routes /chat/completions to the chat facade", async () => {
-    const { calls, fetchImpl } = fetchStubFactory([
-      { type: "response.output_text.delta", delta: "pong" },
-      { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } },
-    ])
+    const { calls, fetchImpl } = fetchStubFactory(CHAT_EVENTS)
     const res = await handleRequest(
       request("/functions/v1/muse-proxy/chat/completions", { body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }) }),
       ENV,
@@ -90,18 +95,11 @@ describe("edge function dispatch", () => {
     const body = (await res.json()) as { object: string; choices: Array<{ message: { content: string } }> }
     expect(body.object).toBe("chat.completion")
     expect(body.choices[0]!.message.content).toBe("pong")
-    expect(calls[0]!.url).toBe("https://opencode.ai/inference/v1/responses")
+    expect(calls[0]!.url).toBe("https://opencode.ai/inference/openai/v1/chat/completions")
   })
 
   it("routes /responses to the responses facade", async () => {
-    const { fetchImpl } = fetchStubFactory([
-      { type: "response.output_text.delta", delta: "pong" },
-      {
-        type: "response.output_item.done",
-        item: { type: "message", content: [{ type: "output_text", text: "pong" }] },
-      },
-      { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } },
-    ])
+    const { calls, fetchImpl } = fetchStubFactory(CHAT_EVENTS)
     const res = await handleRequest(
       request("/functions/v1/muse-proxy/responses", { body: JSON.stringify({ input: "hi" }) }),
       ENV,
@@ -110,13 +108,11 @@ describe("edge function dispatch", () => {
     const body = (await res.json()) as { object: string; output_text: string }
     expect(body.object).toBe("response")
     expect(body.output_text).toBe("pong")
+    expect(calls[0]!.url).toBe("https://opencode.ai/inference/openai/v1/chat/completions")
   })
 
   it("routes /messages to the messages facade and uses the Anthropic envelope", async () => {
-    const { fetchImpl } = fetchStubFactory([
-      { type: "response.output_text.delta", delta: "pong" },
-      { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } },
-    ])
+    const { calls, fetchImpl } = fetchStubFactory(CHAT_EVENTS)
     const res = await handleRequest(
       request("/functions/v1/muse-proxy/messages", {
         headers: { "content-type": "application/json", "x-api-key": "test-key" },
@@ -128,6 +124,7 @@ describe("edge function dispatch", () => {
     const body = (await res.json()) as { type: string; content: Array<{ text: string }> }
     expect(body.type).toBe("message")
     expect(body.content[0]!.text).toBe("pong")
+    expect(calls[0]!.url).toBe("https://opencode.ai/inference/openai/v1/chat/completions")
   })
 
   it("serves /v1/models without touching the upstream", async () => {
@@ -182,7 +179,7 @@ describe("edge function dispatch", () => {
   it("forwards the injected fetch seam to the facades", async () => {
     // A router that dropped the dependency would silently hit the real upstream;
     // assert the seam is threaded through instead.
-    const { calls, fetchImpl } = fetchStubFactory([{ type: "response.completed", response: {} }])
+    const { calls, fetchImpl } = fetchStubFactory([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }])
     await handleRequest(
       request("/functions/v1/muse-proxy/chat/completions", { body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }) }),
       ENV,
@@ -192,7 +189,7 @@ describe("edge function dispatch", () => {
     const init = calls[0]!.init!
     // The opencode free-tier fingerprint must survive the migration untouched.
     const headers = init.headers as Record<string, string>
-    expect(headers["user-agent"]).toBe("opencode/latest/2.0.30/cli")
+    expect(headers["user-agent"]).toBe("opencode/latest/2.0.32/cli")
     expect(headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
     expect(headers.authorization).toBe("Bearer public")
   })
