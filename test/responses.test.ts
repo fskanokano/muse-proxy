@@ -6,18 +6,20 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { handleResponsesRequest, type ResponsesDependencies } from "../api/responses"
-import { normalizeResponsesRequest } from "../api/_lib/responses-lower"
-import { MODEL_ID } from "../api/_lib/types"
-import { OPENCODE_BUILTIN_TOOLS } from "../api/_lib/tools"
+import { normalizeResponsesRequest } from "../api/_lib/responses-lower.js"
+import { MODEL_ID, MODEL_DEEPSEEK } from "../api/_lib/types.js"
+import { OPENCODE_BUILTIN_TOOLS } from "../api/_lib/tools.js"
+
+const MODEL_WIRE = MODEL_DEEPSEEK
 
 const ENV = { PROXY_API_KEY: "test-key" }
 const AUTH = { authorization: "Bearer test-key" }
 
 type FetchCall = { url: string; init?: RequestInit }
 
-function sseResponse(events: Array<Record<string, unknown>>): Response {
+function sseResponse(events: Array<Record<string, unknown>>, withDone = true): Response {
   const lines = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("")
-  return new Response(lines + "data: [DONE]\n\n", {
+  return new Response(lines + (withDone ? "data: [DONE]\n\n" : ""), {
     status: 200,
     headers: { "content-type": "text/event-stream" },
   })
@@ -307,30 +309,10 @@ describe("responses endpoint integration", () => {
   it("non-streaming: aggregates output items, output_text, usage; sends the full fingerprint upstream", async () => {
     mockUpstream([
       sseResponse([
-        {
-          type: "response.created",
-          response: { id: "resp_upstream_1", usage: null },
-        },
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "message",
-            role: "assistant",
-            content: [{ type: "output_text", text: "Hello " }],
-          },
-        },
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "message",
-            role: "assistant",
-            content: [{ type: "output_text", text: "world" }],
-          },
-        },
-        {
-          type: "response.completed",
-          response: { usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 } },
-        },
+        { choices: [{ index: 0, delta: { content: "Hello " } }] },
+        { choices: [{ index: 0, delta: { content: "world" } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } },
       ]),
     ])
 
@@ -338,18 +320,32 @@ describe("responses endpoint integration", () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as Record<string, unknown>
 
-    expect(body.id).toBe("resp_upstream_1")
+    // The raiser mints its own response id (the oa-compat wire carries only
+    // chat chunks, no Responses id to echo verbatim).
+    expect(body.id).toMatch(/^resp_[0-9a-f-]{36}$/)
     expect(body.object).toBe("response")
     expect(body.status).toBe("completed")
     expect(body.model).toBe(MODEL_ID)
     expect(body.output_text).toBe("Hello world")
-    expect(body.usage).toEqual({ input_tokens: 5, output_tokens: 2, total_tokens: 7 })
-    expect((body.output as unknown[]).length).toBe(2)
+    expect(body.usage).toEqual({
+      input_tokens: 5,
+      output_tokens: 2,
+      total_tokens: 7,
+      input_tokens_details: null,
+      output_tokens_details: null,
+    })
+    // One coalesced assistant message item is the oa-compat canonical output.
+    expect((body.output as unknown[]).length).toBe(1)
+    expect((body.output as Array<Record<string, unknown>>)[0]).toMatchObject({
+      type: "message",
+      role: "assistant",
+      status: "completed",
+    })
 
     // Fingerprint headers identical to the chat facade.
     const init = calls[0]!.init!
     const headers = init.headers as Record<string, string>
-    expect(calls[0]!.url).toBe("https://opencode.ai/inference/v1/responses")
+    expect(calls[0]!.url).toBe("https://opencode.ai/inference/openai/v1/chat/completions")
     expect(headers["user-agent"]).toContain("opencode/")
     expect(headers["x-opencode-client"]).toBe("cli")
     expect(headers["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
@@ -357,31 +353,23 @@ describe("responses endpoint integration", () => {
     expect(headers["x-opencode-request"]).toBeUndefined()
     expect(headers["x-opencode-project"]).toBe("global")
 
-    // Upstream body contract.
+    // Upstream body contract: muse aliases onto deepseek on the oa-compat wire.
     const upstreamBody = JSON.parse(String(init.body)) as Record<string, unknown>
-    expect(upstreamBody.model).toBe(MODEL_ID)
+    expect(upstreamBody.model).toBe(MODEL_WIRE)
     expect(upstreamBody.stream).toBe(true)
-    expect(upstreamBody.store).toBe(false)
-    expect(upstreamBody.include).toEqual(["reasoning.encrypted_content"])
-    expect(upstreamBody.prompt_cache_key).toBe(headers["x-opencode-session"])
+    expect(upstreamBody.stream_options).toEqual({ include_usage: true })
+    expect(upstreamBody.reasoning_effort).toBe("high")
     expect(upstreamBody.tool_choice).toBe("auto")
     expect((upstreamBody.tools as unknown[]).length).toBe(OPENCODE_BUILTIN_TOOLS.length)
+    expect((upstreamBody.messages as unknown[]).length).toBeGreaterThan(0)
   })
 
-  it("non-streaming: function_call items surface in output and incomplete status maps through", async () => {
+  it("non-streaming: function_call items surface in output and finish_reason length maps to incomplete", async () => {
     mockUpstream([
       sseResponse([
-        {
-          type: "response.output_item.done",
-          item: { type: "function_call", call_id: "call_9", name: "lookup", arguments: '{"q":"x"}' },
-        },
-        {
-          type: "response.incomplete",
-          response: {
-            usage: { input_tokens: 3, output_tokens: 1 },
-            incomplete_details: { reason: "max_output_tokens" },
-          },
-        },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_9", type: "function", function: { name: "lookup", arguments: '{"q":"x"}' } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "length" }] },
+        { choices: [], usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 } },
       ]),
     ])
 
@@ -390,18 +378,17 @@ describe("responses endpoint integration", () => {
     expect(body.status).toBe("incomplete")
     expect(body.incomplete_details).toEqual({ reason: "max_output_tokens" })
     const output = body.output as Array<Record<string, unknown>>
-    expect(output[0]).toEqual({ type: "function_call", call_id: "call_9", name: "lookup", arguments: '{"q":"x"}' })
+    expect(output[0]).toEqual({ type: "function_call", id: "fc_call_9", call_id: "call_9", name: "lookup", arguments: '{"q":"x"}', status: "completed" })
   })
 
-  it("non-streaming: upstream failure event becomes a 502 error body", async () => {
-    mockUpstream([
-      sseResponse([{ type: "response.failed", response: { error: { code: "provider_error", message: "boom" } } }]),
-    ])
+  it("non-streaming: upstream non-2xx becomes a 502 error body", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { message: "boom" } }), { status: 503 })) as typeof fetch
     const res = await handleResponsesRequest(post({ input: "hi" }), ENV)
     expect(res.status).toBe(502)
     const body = (await res.json()) as { error: { message: string; code: string } }
-    expect(body.error.message).toBe("boom")
-    expect(body.error.code).toBe("provider_error")
+    expect(body.error.message).toContain("boom")
+    expect(body.error.code).toBe("upstream_error")
   })
 
   it("oa-compat streaming exposes the complete Responses function-call lifecycle for OpenMinis", async () => {
@@ -475,13 +462,13 @@ describe("responses endpoint integration", () => {
     expect(deltas).toBe(done.item.arguments)
   })
 
-  it("streaming: forwards upstream events verbatim with event:/data: framing and no [DONE] line", async () => {
+  it("streaming: emits the canonical raised lifecycle with event:/data: framing and no [DONE] line", async () => {
     mockUpstream([
       sseResponse([
-        { type: "response.created", response: { id: "resp_s1" } },
-        { type: "response.output_text.delta", delta: "Hel" },
-        { type: "response.output_text.delta", delta: "lo" },
-        { type: "response.completed", response: { usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } },
+        { choices: [{ index: 0, delta: { content: "Hel" } }] },
+        { choices: [{ index: 0, delta: { content: "lo" } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } },
       ]),
     ])
 
@@ -492,46 +479,83 @@ describe("responses endpoint integration", () => {
     const text = await res.text()
     expect(text).not.toContain("[DONE]")
 
-    // Each upstream event must appear exactly once, framed as
-    // `event: <type>\ndata: <json>`.
+    // The oa-compat raiser re-implements the muse Responses SSE lifecycle:
+    // created -> added -> part added -> deltas -> part done -> item done ->
+    // completed, each framed as `event: <type>\ndata: <json>`.
     const frames = text.split("\n\n").filter((block) => block.startsWith("event: "))
-    expect(frames).toHaveLength(4)
     const types = frames.map((frame) => frame.split("\n")[0]!.slice("event: ".length))
-    expect(types).toEqual(["response.created", "response.output_text.delta", "response.output_text.delta", "response.completed"])
+    expect(types[0]).toBe("response.created")
+    expect(types.at(-1)).toBe("response.completed")
+    expect(types.filter((type) => type === "response.output_text.delta")).toEqual([
+      "response.output_text.delta",
+      "response.output_text.delta",
+    ])
 
-    const payload = JSON.parse(frames[1]!.split("\n")[1]!.slice("data: ".length)) as { type: string; delta: string }
-    expect(payload).toEqual({ type: "response.output_text.delta", delta: "Hel" })
+    const payload = JSON.parse(frames[types.indexOf("response.output_text.delta")]!.split("\n")[1]!.slice("data: ".length)) as { type: string; delta: string }
+    expect(payload.type).toBe("response.output_text.delta")
+    expect(payload.delta).toBe("Hel")
   })
 
-  it("streaming: drops upstream ping keep-alive frames so response.completed stays terminal", async () => {
+  it("streaming: never echoes a response.tools list (oa-compat raiser suppresses it)", async () => {
+    // The muse upstream echoed its full injected tool list on every response
+    // object; the oa-compat wire has no such field, so downstream never sees
+    // one - and the facade must not inject or leak the aliased mp_ names.
     mockUpstream([
       sseResponse([
-        { type: "response.created", response: { id: "resp_p1" } },
-        { type: "ping" },
-        { type: "response.output_text.delta", delta: "ok" },
-        { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
-        { type: "ping" },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
       ]),
     ])
+
+    const res = await handleResponsesRequest(
+      post({
+        input: "hi",
+        stream: true,
+        tools: [
+          { type: "function", name: "shell", description: "client shell", parameters: { type: "object" } },
+          { type: "function", name: "my_tool", description: "mine", parameters: { type: "object" } },
+        ],
+      }),
+      ENV,
+    )
+    const text = await res.text()
+    const echoBits = text
+      .split("\n\n")
+      .filter((block) => block.startsWith("event: "))
+      .map((frame) => JSON.parse(frame.split("\n")[1]!.slice("data: ".length)) as Record<string, unknown>)
+      .map((event) => (event.response as { tools?: unknown } | undefined)?.tools)
+    expect(echoBits.every((tools) => tools === undefined)).toBe(true)
+    expect(text).not.toContain("mp_shell")
+  })
+
+  it("streaming: tolerates SSE comment keep-alive frames, completed stays terminal", async () => {
+    const lines = [
+      `: ping\n\n`, // oa-compat keep-alives are SSE comments, not data frames
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "ok" } }] })}\n\n`,
+      `: ping\n\n`,
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\n`,
+      `data: [DONE]\n\n`,
+    ]
+    globalThis.fetch = (async () =>
+      new Response(lines.join(""), { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch
 
     const res = await handleResponsesRequest(post({ input: "hi", stream: true }), ENV)
     const text = await res.text()
 
-    // No ping frames leak through in either event: type or data payload.
+    // No ping payload leaks through in either event: type or data payload.
     expect(text).not.toContain("ping")
     const frames = text.split("\n\n").filter((block) => block.startsWith("event: "))
     const types = frames.map((frame) => frame.split("\n")[0]!.slice("event: ".length))
-    expect(types).toEqual(["response.created", "response.output_text.delta", "response.completed"])
+    expect(types).toContain("response.created")
+    expect(types).toContain("response.output_text.delta")
     // The terminal frame is the spec-required response.completed.
     expect(types.at(-1)).toBe("response.completed")
   })
 
   it("streaming: upstream EOF without a terminal event surfaces a synthetic error event", async () => {
+    // EOF mid-stream: content frames but no finish chunk and no [DONE].
     mockUpstream([
-      sseResponse([
-        { type: "response.created", response: { id: "resp_t1" } },
-        { type: "response.output_text.delta", delta: "truncat" },
-      ]),
+      sseResponse([{ choices: [{ index: 0, delta: { content: "truncat" } }] }], false),
     ])
     const res = await handleResponsesRequest(post({ input: "hi", stream: true }), ENV)
     const text = await res.text()
@@ -545,22 +569,19 @@ describe("responses endpoint integration", () => {
   })
 
   it("non-streaming: upstream EOF without a terminal event returns 502 instead of a completed response", async () => {
-    mockUpstream([
-      sseResponse([
-        { type: "response.output_text.delta", delta: "partial" },
-      ]),
-    ])
+    mockUpstream([sseResponse([{ choices: [{ index: 0, delta: { content: "partial" } }] }], false)])
     const res = await handleResponsesRequest(post({ input: "hi" }), ENV)
     expect(res.status).toBe(502)
     const body = (await res.json()) as { error: { code: string } }
     expect(body.error.code).toBe("upstream_stream_truncated")
   })
 
-  it("streaming: mid-stream failure surfaces a framed error event", async () => {
+  it("streaming: mid-stream in-band error frame surfaces as a framed error event", async () => {
     mockUpstream([
       sseResponse([
-        { type: "response.output_text.delta", delta: "partial" },
-        { type: "error", code: "overloaded", message: "upstream exploded" },
+        { choices: [{ index: 0, delta: { content: "partial" } }] },
+        // OpenAI-compatible upstreams send data: {"error": ...} mid-stream.
+        { error: { code: "overloaded", message: "upstream exploded" } },
       ]),
     ])
     const res = await handleResponsesRequest(post({ input: "hi", stream: true }), ENV)
@@ -586,11 +607,9 @@ describe("responses endpoint integration", () => {
   it("non-streaming: restores namespace prefix on client function_call items", async () => {
     mockUpstream([
       sseResponse([
-        {
-          type: "response.output_item.done",
-          item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file", arguments: '{"path":"x"}' },
-        },
-        { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "read_file", arguments: '{"path":"x"}' } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+        { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
       ]),
     ])
     const res = await handleResponsesRequest(
@@ -616,19 +635,8 @@ describe("responses endpoint integration", () => {
   it("non-streaming: drops hidden builtin function_call items but keeps client calls", async () => {
     mockUpstream([
       sseResponse([
-        {
-          type: "response.output_item.done",
-          item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "bash", arguments: '{"command":"x"}' },
-        },
-        {
-          type: "response.output_item.done",
-          item: { type: "function_call", id: "fc_2", call_id: "call_2", name: "websearch", arguments: '{"query":"x"}' },
-        },
-        {
-          type: "response.output_item.done",
-          item: { type: "function_call", id: "fc_3", call_id: "call_3", name: "get_weather", arguments: '{"city":"x"}' },
-        },
-        { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "shell", arguments: '{"command":"x"}' } }, { index: 1, id: "call_2", type: "function", function: { name: "websearch", arguments: '{"query":"x"}' } }, { index: 2, id: "call_3", type: "function", function: { name: "get_weather", arguments: '{"city":"x"}' } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
       ]),
     ])
     const res = await handleResponsesRequest(post({ input: "hi" }), ENV)
@@ -640,60 +648,28 @@ describe("responses endpoint integration", () => {
   it("streaming: drops the full hidden function_call event sequence but forwards client calls", async () => {
     mockUpstream([
       sseResponse([
-        { type: "response.created", response: { id: "resp_hidden" } },
-        {
-          type: "response.output_item.added",
-          output_index: 0,
-          item: { id: "fc_hidden", type: "function_call", status: "in_progress", name: "bash", call_id: "call_h", arguments: "" },
-        },
-        { type: "response.function_call_arguments.delta", output_index: 0, item_id: "fc_hidden", delta: '{"co' },
-        { type: "response.function_call_arguments.done", output_index: 0, item_id: "fc_hidden", arguments: '{"co"}', name: "bash" },
-        {
-          type: "response.output_item.done",
-          output_index: 0,
-          item: { id: "fc_hidden", type: "function_call", status: "completed", name: "bash", call_id: "call_h", arguments: '{"co"}' },
-        },
-        {
-          type: "response.output_item.added",
-          output_index: 1,
-          item: { id: "fc_client", type: "function_call", status: "in_progress", name: "get_weather", call_id: "call_c", arguments: "" },
-        },
-        { type: "response.function_call_arguments.delta", output_index: 1, item_id: "fc_client", delta: '{"ci' },
-        {
-          type: "response.output_item.done",
-          output_index: 1,
-          item: { id: "fc_client", type: "function_call", status: "completed", name: "get_weather", call_id: "call_c", arguments: '{"ci"}' },
-        },
-        { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_h", type: "function", function: { name: "shell", arguments: '{"command":"x"}' } }] } }] },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_c", type: "function", function: { name: "get_weather", arguments: '{"city":"x"}' } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
       ]),
     ])
     const res = await handleResponsesRequest(post({ input: "hi", stream: true }), ENV)
     const text = await res.text()
-    expect(text).not.toContain('"bash"')
-    expect(text).not.toContain("fc_hidden")
-    expect(text).not.toContain('call_h')
+    expect(text).not.toContain('"shell"')
+    expect(text).not.toContain("call_h")
     expect(text).toContain('"get_weather"')
-    expect(text).toContain("fc_client")
     const frames = text.split("\n\n").filter((block) => block.startsWith("event: "))
     const types = frames.map((frame) => frame.split("\n")[0]!.slice("event: ".length))
     // 隐藏调用的 delta 已丢弃：剩下唯一的 arguments.delta 属于客户端工具。
     expect(types.filter((type) => type === "response.function_call_arguments.delta")).toHaveLength(1)
-    expect(text).toContain("fc_client")
     expect(types.at(-1)).toBe("response.completed")
   })
 
   it("streaming: rewrites upstream function_call/exec to custom_tool_call downstream", async () => {
     mockUpstream([
       sseResponse([
-        {
-          type: "response.output_item.added",
-          item: { id: "fc_e1", type: "function_call", name: "exec", call_id: "call_e1", arguments: "" },
-        },
-        {
-          type: "response.output_item.done",
-          item: { id: "fc_e1", type: "function_call", name: "exec", call_id: "call_e1", arguments: '{"input":"1+1"}' },
-        },
-        { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_e1", type: "function", function: { name: "exec", arguments: '{"input":"1+1"}' } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
       ]),
     ])
     const res = await handleResponsesRequest(
@@ -741,7 +717,7 @@ describe("responses endpoint integration", () => {
   })
 
   it("drops multi-turn encrypted reasoning replay instead of sending it upstream", async () => {
-    mockUpstream([sseResponse([{ type: "response.completed", response: {} }])])
+    mockUpstream([sseResponse([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }])])
     await handleResponsesRequest(
       post({
         input: [
@@ -753,8 +729,17 @@ describe("responses endpoint integration", () => {
       }),
       ENV,
     )
-    const body = JSON.parse(String(calls[0]!.init!.body)) as { input: Array<Record<string, unknown>> }
-    const types = body.input.map((item) => ("role" in item ? item.role : item.type))
-    expect(types).toEqual(["user", "function_call", "function_call_output"])
+    // The oa-compat wire carries a chat messages array: reasoning glitches are
+    // dropped, function_call outputs replay as assistant(tool_calls)+tool.
+    const body = JSON.parse(String(calls[0]!.init!.body)) as { messages: Array<Record<string, unknown>> }
+    const roles = body.messages.map((item) => item.role)
+    expect(roles).toEqual(["user", "assistant", "tool"])
+    expect(body.messages[1]).toMatchObject({ role: "assistant" })
+    expect((body.messages[1] as { tool_calls?: unknown[] }).tool_calls).toHaveLength(1)
+    const tool = body.messages[2] as { tool_call_id?: string }
+    expect(tool.tool_call_id).toBe("c1")
+    const serialized = JSON.stringify(body.messages)
+    expect(serialized).not.toContain("rs_1")
+    expect(serialized).not.toContain("ENC-1")
   })
 })

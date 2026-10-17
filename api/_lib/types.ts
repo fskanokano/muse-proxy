@@ -9,8 +9,13 @@
 // inference call with 403 FreeTierError; the live client (2.0.29) reads
 // https://opencode.ai/inference/v1 from the runtime catalog
 // (models.opencode.ai/api.json -> providers.opencode.api) and posts there.
-// The model->format routing is unchanged: muse keeps /responses, the
-// oa-compat models keep /chat/completions (re-probed both ways).
+// 2026-10-17: the catalog's provider.api moved again — openai-compatible
+// entries now read https://opencode.ai/inference/openai/v1 (a second mount of
+// the same gate; live-probed both mounts 200 with identical bodies, and
+// stream:false answers 403 FreeTierError on BOTH, so the free tier stays
+// stream:true-only). The oa-compat branch now posts to the /inference/openai/v1
+// mount, mirroring the shipped client. The muse /responses mount is unusable
+// since the muse deprecation; UPSTREAM_URL below remains only for probe scripts.
 export const UPSTREAM_URL = "https://opencode.ai/inference/v1/responses"
 // opencode zen free models accept the literal api key "public" when no zen
 // account key is configured (see opencode provider.ts custom loader).
@@ -42,7 +47,12 @@ export const UPSTREAM_API_KEY = "public"
 // session-id / affinity / x-session-id) and still NO `x-opencode-request`.
 // Live-probed both versions against /inference/v1: 2.0.29 and 2.0.30 both 200,
 // so the constant simply follows npm latest.
-export const OPENCODE_VERSION = "2.0.30"
+//
+// 2026-10-17 re-verification (npm latest 2.0.32, repo tip 4a53028): UA builder
+// and header set unchanged (packages/core/src/app.ts + session/model-request.ts);
+// the tool set grew a patch plugin but the wire fingerprint keeps passing with
+// the same 12 builtin definitions — re-verified live on 2026-10-17.
+export const OPENCODE_VERSION = "2.0.32"
 export const OPENCODE_CHANNEL = "latest"
 export const OPENCODE_CLIENT = "cli"
 export const UPSTREAM_USER_AGENT = `opencode/${OPENCODE_CHANNEL}/${OPENCODE_VERSION}/${OPENCODE_CLIENT}`
@@ -73,16 +83,21 @@ export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high"
 //     /inference/v1/responses 400 ModelProtocolUnsupported, chat/completions 200)
 //   - glm-5.3-flash-free               -> "oa-compat" (probed 2026-10-16:
 //     /inference/v1/responses 400 ModelProtocolUnsupported, chat/completions 200)
-// The muse paths (types.ts + lower*.ts + chat-upstream-less handlers) must
-// stay untouched; new models therefore route through a dedicated converter
-// (_lib/chat-upstream.ts) while muse keeps using the Responses upstream.
+// 2026-10-17: the muse free model was retired upstream — the zen edge answers
+// every muse id with `Model muse-spark-1.3-contributor-free has been
+// deprecated.` while muse-spark-1.2 got the same treatment, and NO live free
+// model speaks the Responses protocol anymore (nemotron/beam etc. all answer
+// /inference/v1/responses with 400 ModelProtocolUnsupported). The muse ids now
+// resolve to the deepseek-v4.1-flash-free oa-compat entry (upstreamId alias),
+// so THEY and every unknown-id fallback ride the chat-completions branch
+// (_lib/chat-upstream.ts) like the other free models.
 export const MODEL_MUSE = "muse-spark-1.3-contributor-free"
 export const MODEL_MIMO = "mimo-v2.6-flash-free"
 export const MODEL_SPACE_BUNNY = "space-bunny-free"
 export const MODEL_STEP5 = "step-5-preview-free"
 export const MODEL_DEEPSEEK = "deepseek-v4.1-flash-free"
 export const MODEL_GLM = "glm-5.3-flash-free"
-/** 实验模型: 与 muse 同一上游, 但启用代理层 goal 自动续轮 (见 _lib/goal.ts)。 */
+/** 实验模型: API id 保留, 上游随 muse 弃用重落到 deepseek (upstreamId+isGoal)。 */
 export const MODEL_GOAL = "muse-spark-1.3-contributor-goal"
 
 export type UpstreamFormat = "responses" | "oa-compat"
@@ -98,18 +113,20 @@ export interface ModelInfo {
   maxOutputTokens: number
   /** Reasoning effort values accepted upstream ([] = no effort control). */
   efforts: readonly string[]
-  /** Convenience: keep muse defaults working via the old MODEL_ID constant. */
+  /** Historical muse marker (kept for compat; the entry is now a deepseek alias). */
   isMuse?: boolean
-  /** goal 实验模型标记: 上游仍走 muse, 但门面为其启用自动续轮。 */
+  /** goal 实验模型标记: 上游与 base 模型一致, 但门面为其启用自动续轮。 */
   isGoal?: boolean
-  /** 发往上游的模型 id (缺省用 id 自身; goal 模型填 muse id, 上游不认识 goal id)。 */
+  /** 发往上游的模型 id (缺省用 id 自身; muse/goal 等弃用别名填存活模型 id)。 */
   upstreamId?: string
 }
 
 // Effort levels come from the models.opencode.ai catalog (reasoning_options)
 // verified against the real edge with a per-value probe (2026-09-24,
 // scripts/probe-reasoning-efforts.ts):
-//   - muse: none..xhigh accepted, max 400s (invalid parameters).
+//   - muse: retired upstream 2026-10-17 (deprecation); the muse entry now
+//     aliases deepseek-v4.1-flash-free so its effort levels are deepseek's
+//     low/high/max (undocumented levels dropped, none clamps to low).
 //   - mimo: reasoning is ALWAYS ON; reasoning_effort is tolerated (200) but
 //     has no effect, so no effort levels are advertised or sent.
 //   - space-bunny: minimal/low/medium/high/xhigh/max all 200; "none" 400s
@@ -121,16 +138,28 @@ export interface ModelInfo {
 //     answers 400 "Reasoning is mandatory for this endpoint and cannot be
 //     disabled" (re-probed twice, scripts/probe-step5-none.ts), so the
 //     clampEffortForModel none->minimal rule covers step-5 as well.
+// The muse free model was retired upstream on 2026-10-17 — every muse id
+// (1.2/1.3) answers "has been deprecated." BOTH on /inference/v1/responses and
+// /inference/v1/chat/completions, and no live free model speaks the Responses
+// protocol (probe: nemotron-3.5-super-vl-free / beam-free both 400
+// ModelProtocolUnsupported on the responses mount). To keep the historical
+// "any model id resolves somewhere" contract the muse entry stays in the
+// catalog as an ALIAS of deepseek-v4.1-flash-free: id is preserved so clients
+// echo their own request back, upstreamId routes the wire traffic to the live
+// oa-compat model, and efforts/metadata mirror the actually served model
+// (probed 2026-10-17: deepseek 200 on both chat mounts; responses mount
+// ModelProtocolUnsupported).
 const MUSE_INFO: ModelInfo = {
   id: MODEL_MUSE,
-  name: "Muse Spark 1.3 Contributor Free (opencode zen)",
-  upstream: "responses",
+  name: "Muse Spark 1.3 Contributor Free (deprecated upstream, served by DeepSeek V4.1 Flash Free)",
+  upstream: "oa-compat",
   description:
-    "Muse Spark 1.3 Contributor (free tier) served via opencode zen with encrypted-reasoning replay. Any unknown model id falls back here.",
-  contextWindow: 1_048_576,
+    " muse-spark free ids were retired upstream (2026-10-17); requests resolve to the live DeepSeek V4.1 Flash Free (free tier). Any unknown model id still falls back here.",
+  contextWindow: 200_000,
   maxOutputTokens: 32_000,
-  efforts: REASONING_EFFORTS,
+  efforts: ["low", "high", "max"],
   isMuse: true,
+  upstreamId: MODEL_DEEPSEEK,
 }
 const MIMO_INFO: ModelInfo = {
   id: MODEL_MIMO,
@@ -215,19 +244,21 @@ const GLM_INFO: ModelInfo = {
   maxOutputTokens: 32_000,
   efforts: ["low", "high", "max"],
 }
-// 实验模型: 与 muse 同一上游 (upstream responses 格式, 32K 输出),
-// 区别仅在于门面为其启用 goal 自动续轮: 无工具干净收尾时先过 judge,
-// 判未完成则自动续一轮 (cap 见 MP_GOAL_MAX_ROUNDS)。上游永远收到 muse id。
+// 实验模型: 随 muse 弃用一并重落到 deepseek-v4.1-flash-free (upstreamId,
+// oa-compat chat 上游), 门面继续为其启用 goal 自动续轮: 无工具干净收尾时先过
+// judge (裁判即本模型自身经由 chat/completions, 见 _lib/goal.ts —— 门禁要求
+// 上游流式, judge 也是流式聚合), 判未完成则自动续一轮 (cap 见 MP_GOAL_MAX_ROUNDS)。
+// 上游收到 deepseek id。
 const GOAL_INFO: ModelInfo = {
   id: MODEL_GOAL,
-  name: "Muse Spark 1.3 Contributor Goal (auto-continue experiment)",
-  upstream: "responses",
-  upstreamId: MODEL_MUSE,
+  name: "Muse Spark 1.3 Contributor Goal (auto-continue experiment, served by DeepSeek V4.1 Flash Free)",
+  upstream: "oa-compat",
+  upstreamId: MODEL_DEEPSEEK,
   description:
-    "Same upstream as muse-spark-1.3-contributor-free, plus proxy-level goal check: a clean tool-less turn is judged (by the same model) and auto-continued when incomplete. Experimental; usage only reflects the final turn.",
-  contextWindow: 1_048_576,
+    "Goal auto-continue experiment: a clean tool-less turn is judged (by the served model) and auto-continued when incomplete. Served by DeepSeek V4.1 Flash Free since the muse deprecation (2026-10-17). Experimental; usage only reflects the final turn.",
+  contextWindow: 200_000,
   maxOutputTokens: 32_000,
-  efforts: REASONING_EFFORTS,
+  efforts: ["low", "high", "max"],
   isGoal: true,
 }
 
@@ -249,8 +280,10 @@ export const DEFAULT_MODEL_ID = MODEL_MUSE
  * Returns undefined when the model has no effort control (mimo: reasoning is
  * always on, the field is dropped) or the requested value is undefined.
  * space-bunny and step-5 reject "none" upstream (400), so it clamps to their
- * lowest accepted level instead of being forwarded. Muse keeps its historical
- * whitelist untouched (REASONING_EFFORTS, which already contains none).
+ * lowest accepted level instead of being forwarded. muse/goal alias the deepseek
+ * entry (deepseek efforts low/high/max), so undocumented levels are dropped,
+ * "none" clamps to low, and the historical muse none..xhigh whitelist died with
+ * the muse deprecation (2026-10-17).
  */
 export function clampEffortForModel(model: ModelInfo, effort: string | undefined): string | undefined {
   if (effort === undefined || model.efforts.length === 0) return undefined
@@ -264,7 +297,10 @@ export function clampEffortForModel(model: ModelInfo, effort: string | undefined
  *
  * Aliases collapse onto the same upstream free model (e.g. the paid zen
  * name "mimo-v2.6-flash" is served by the free upstream variant), and any
- * unknown id keeps the historical muse behavior (never an error).
+ * unknown id keeps the historical muse behavior (never an error) — since the
+ * 2026-10-17 muse deprecation the muse entry itself aliases the live
+ * deepseek-v4.1-flash-free oa-compat model, so muse ids and unknown ids ride
+ * the chat-completions branch like every other free model.
  */
 export function resolveModel(requested: unknown): ModelInfo {
   if (typeof requested !== "string" || requested.length === 0) return MUSE_INFO
@@ -281,9 +317,9 @@ export function resolveModel(requested: unknown): ModelInfo {
 }
 
 // Legacy alias: identical to MODEL_MUSE (historical lower modules + tests
-// reference MODEL_ID; the muse path keeps working unchanged).
+// reference MODEL_ID; muse ids keep resolving, now via the deepseek alias).
 export const MODEL_ID = MODEL_MUSE
-export const MODEL_NAME = "Muse Spark 1.3 Contributor Free (opencode zen)"
+export const MODEL_NAME = "Muse Spark 1.3 Contributor Free (deprecated upstream, served by DeepSeek V4.1 Flash Free)"
 // opencode OUTPUT_TOKEN_MAX (packages/opencode/src/provider/transform.ts).
 export const MAX_OUTPUT_TOKENS = 32_000
 

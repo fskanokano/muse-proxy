@@ -1,4 +1,4 @@
-// POST /v1/responses (rewritten to /api/responses) — OpenAI Responses API
+// POST /v1/responses (Supabase Edge Function `muse-proxy`) — OpenAI Responses API
 // facade, independent from the chat completions facade in api/chat.ts.
 //
 // Pipeline: auth -> normalizeResponsesRequest (Responses body -> upstream
@@ -16,11 +16,10 @@ import { checkAuth } from "./_lib/auth.js"
 import { jsonError, upstreamErrorToOpenAI } from "./_lib/errors.js"
 import { identityForCall } from "./_lib/identity.js"
 import { normalizeResponsesRequest } from "./_lib/responses-lower.js"
-import { HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse.js"
+import { HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS } from "./_lib/sse.js"
 import { exposedToolName, shouldExposeToolCall } from "./_lib/tools.js"
-import type { UpstreamEvent, UpstreamInputItem, UpstreamUsage } from "./_lib/types.js"
-import { DEFAULT_REASONING_EFFORT, MODEL_ID, OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT, resolveModel } from "./_lib/types.js"
-import { runGoalTurns, type GoalCtx } from "./_lib/goal.js"
+import type { UpstreamEvent, UpstreamUsage } from "./_lib/types.js"
+import { DEFAULT_REASONING_EFFORT, MODEL_ID, resolveModel } from "./_lib/types.js"
 import { handleOaCompatUpstream } from "./_lib/oa-compat.js"
 
 export interface ResponsesEnv {
@@ -203,13 +202,13 @@ export class ResponseBuilder {
     }
   }
 
-  build(fallbackId: string, createdAt: number, echo: Record<string, unknown>): Record<string, unknown> {
+  build(fallbackId: string, createdAt: number, echo: Record<string, unknown>, modelId?: string): Record<string, unknown> {
     const body: Record<string, unknown> = {
       id: this.upstreamResponseId ?? fallbackId,
       object: "response",
       created_at: createdAt,
       status: this.status,
-      model: MODEL_ID,
+      model: modelId ?? MODEL_ID,
       output: this.output,
       output_text: this.outputText,
       error: this.error,
@@ -261,215 +260,29 @@ export async function handleResponsesRequest(
   }
   const wantsStream = normalized.stream
 
-  // Model routing: the two new free models live on the oa-compat format
-  // (/v1/chat/completions upstream); muse keeps the untouched Responses path.
+  // Model routing: since the 2026-10-17 muse deprecation every model — muse
+  // and goal aliases included — rides the oa-compat chat/completions upstream
+  // (_lib/oa-compat.ts); the muse Responses mount is retired with it.
   const resolved = resolveModel((rawBody as { model?: unknown } | null)?.model)
-  if (resolved.upstream === "oa-compat") {
-    return handleOaCompatUpstream(
-      {
-        callId: responseId,
-        identity,
-        model: resolved,
-        input: normalized.request.input,
-        tools: normalized.request.tools ?? [],
-        effort: normalized.request.reasoning?.effort,
-        temperature: normalized.request.temperature,
-        topP: normalized.request.top_p,
-        maxOutputTokens: normalized.request.max_output_tokens,
-        signal: request.signal,
-        fetchImpl,
-        renderUpstreamError: (status, body) => jsonResponse(upstreamErrorToOpenAI(status, body)),
-        renderNetworkError: (message) =>
-          jsonResponse(jsonError(502, message, "upstream_unreachable", "api_error")),
-      },
-      async (events) => {
-        // Non-streaming: aggregate internally, respond with one JSON object.
-        if (!wantsStream) {
-          const builder = new ResponseBuilder()
-          builder.clientToolNames = normalized.clientToolNames
-          builder.nsPrefixByBare = normalized.nsPrefixByBare
-          for await (const event of events) {
-            if (event === "done") break
-            builder.addEvent(event)
-          }
-          if (builder.status === "failed") {
-            return jsonResponse(jsonError(502, builder.error?.message ?? "upstream error", builder.error?.code ?? "upstream_error", "api_error"))
-          }
-          if (!builder.sawTerminalEvent) {
-            return jsonResponse(jsonError(502, "upstream closed the stream before a terminal response event", "upstream_stream_truncated", "api_error"))
-          }
-          const echo: Record<string, unknown> = {
-            model: resolved.id,
-            temperature: normalized.request.temperature ?? null,
-            top_p: normalized.request.top_p ?? null,
-            max_output_tokens: normalized.request.max_output_tokens ?? null,
-            tool_choice: "auto",
-            reasoning: { effort: normalized.request.reasoning?.effort ?? DEFAULT_REASONING_EFFORT, summary: "auto" },
-          }
-          return new Response(JSON.stringify(builder.build(responseId, createdAt, echo)), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          })
-        }
-        // Streaming: re-frame raised events as canonical Responses SSE.
-        const encoder = new TextEncoder()
-        const stream = new ReadableStream<Uint8Array>({
-          async start(controller) {
-            let closed = false
-            const push = (text: string) => {
-              if (!closed) controller.enqueue(encoder.encode(text))
-            }
-            const heartbeat = setInterval(() => push(HEARTBEAT_COMMENT), HEARTBEAT_INTERVAL_MS)
-            const frameEvent = (event: Record<string, unknown>): string => {
-              const type = typeof event.type === "string" ? event.type : undefined
-              const data = `data: ${JSON.stringify(event)}\n\n`
-              return type !== undefined ? `event: ${type}\n${data}` : data
-            }
-            try {
-              let sawTerminalEvent = false
-              const clientToolNames = normalized.clientToolNames
-              // Mirror the muse-path hidden-builtin filtering: drop builtin
-              // tool calls the client cannot execute across the whole event
-              // sequence (added/delta/done + terminal response.output).
-              const hiddenItemIds = new Set<string>()
-              for await (const event of events) {
-                if (event === "done") break
-                if (event.type === "ping") continue
-                if (event.type === "response.output_item.added") {
-                  const item = event.item as Record<string, unknown> | undefined
-                  if (item?.type === "function_call" && typeof item.name === "string" && !shouldExposeToolCall(item.name, clientToolNames)) {
-                    if (typeof item.id === "string") hiddenItemIds.add(item.id)
-                    continue
-                  }
-                }
-                if (event.type === "response.function_call_arguments.delta" || event.type === "response.function_call_arguments.done") {
-                  const itemId = typeof event.item_id === "string" ? event.item_id : undefined
-                  const name = typeof event.name === "string" ? event.name : undefined
-                  if ((itemId !== undefined && hiddenItemIds.has(itemId)) || (name !== undefined && !shouldExposeToolCall(name, clientToolNames))) {
-                    continue
-                  }
-                }
-                if (event.type === "response.output_item.done") {
-                  const item = (event as Record<string, unknown>).item as Record<string, unknown> | undefined
-                  if (item?.type === "function_call" && typeof item.name === "string" && !shouldExposeToolCall(item.name, clientToolNames)) {
-                    if (typeof item.id === "string") hiddenItemIds.delete(item.id)
-                    continue
-                  }
-                }
-                if (event.type === "response.completed" || event.type === "response.incomplete") {
-                  const response = event.response as Record<string, unknown> | undefined
-                  const output = response?.output
-                  if (response && Array.isArray(output)) {
-                    response.output = output
-                      .filter((entry) => {
-                        if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return true
-                        const record = entry as Record<string, unknown>
-                        return !(record.type === "function_call" && typeof record.name === "string" && !shouldExposeToolCall(record.name, clientToolNames))
-                      })
-                      .map((entry) =>
-                        typeof entry === "object" && entry !== null && !Array.isArray(entry)
-                          ? exposeItemName(entry as Record<string, unknown>)
-                          : entry,
-                      )
-                  }
-                  sawTerminalEvent = true
-                } else if (event.type === "response.failed" || event.type === "error") {
-                  sawTerminalEvent = true
-                }
-                push(frameEvent(exposeUpstreamNames(event, clientToolNames)))
-              }
-              if (!sawTerminalEvent) {
-                push(frameEvent({
-                  type: "error",
-                  code: "upstream_stream_truncated",
-                  message: "upstream closed the stream before a terminal response event",
-                }))
-              }
-            } catch (error) {
-              const message = error instanceof Error ? error.message : "stream interrupted"
-              push(frameEvent({ type: "error", code: "proxy_stream_error", message }))
-            } finally {
-              clearInterval(heartbeat)
-              if (!closed) {
-                closed = true
-                controller.close()
-              }
-            }
-          },
-          cancel() {},
-        })
-        return new Response(stream, {
-          status: 200,
-          headers: {
-            "content-type": "text/event-stream; charset=utf-8",
-            "cache-control": "no-cache, no-transform",
-            connection: "keep-alive",
-            "x-accel-buffering": "no",
-          },
-        })
-      },
-    )
-  }
-
-  // 上游 POST 闭包 (首轮与 goal 续轮/judge 共用, 指纹头与 body 原型唯一来源)。
-  const postUpstream = (body: Record<string, unknown>): Promise<Response> =>
-    fetchImpl(UPSTREAM_URL, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${UPSTREAM_API_KEY}`,
-        "content-type": "application/json",
-        accept: "*/*",
-        "user-agent": UPSTREAM_USER_AGENT,
-        "x-opencode-session": identity.sessionId,
-        "x-opencode-session-id": identity.sessionId,
-        "x-session-affinity": identity.sessionId,
-        "x-session-id": identity.sessionId,
-        // The v2 client (2.0.29/2.0.30) does NOT send x-opencode-request, and
-        // re-adding the header trips the free-tier gate (403). The msg_ id
-        // stays local-only.
-        "x-opencode-client": OPENCODE_CLIENT,
-        "x-opencode-project": OPENCODE_PROJECT_ID,
-      },
-      body: JSON.stringify(body),
-      // Propagate client disconnects so we stop billing upstream tokens.
+  return handleOaCompatUpstream(
+    {
+      callId: responseId,
+      identity,
+      model: resolved,
+      input: normalized.request.input,
+      tools: normalized.request.tools ?? [],
+      effort: normalized.request.reasoning?.effort,
+      temperature: normalized.request.temperature,
+      topP: normalized.request.top_p,
+      maxOutputTokens: normalized.request.max_output_tokens,
+      goalMaxRounds: env.goalMaxRounds,
       signal: request.signal,
-    })
-  let upstream: Response
-  try {
-    // Identical opencode client header fingerprint as api/chat.ts — the zen
-    // free tier gates on it regardless of which facade the client used.
-    upstream = await postUpstream(normalized.request as unknown as Record<string, unknown>)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "network error"
-    return jsonResponse(jsonError(502, `failed to reach opencode zen: ${message}`, "upstream_unreachable", "api_error"))
-  }
-
-  if (!upstream.ok || upstream.body === null) {
-    let upstreamJson: unknown = null
-    try {
-      upstreamJson = await upstream.json()
-    } catch {
-      upstreamJson = null
-    }
-    return jsonResponse(upstreamErrorToOpenAI(upstream.status, upstreamJson))
-  }
-
-  const rawEvents: AsyncGenerator<Record<string, unknown> | "done"> = parseUpstreamSse(upstream.body)
-  // goal 实验模型: 无工具干净收尾时过 judge, 判未完成则自动续轮 (见 _lib/goal.ts)。
-  // 非 goal 模型保持逐字节旧行为。
-  const events: AsyncGenerator<Record<string, unknown> | "done"> = resolved.isGoal
-    ? runGoalTurns(rawEvents, {
-        model: resolved,
-        baseBody: normalized.request as unknown as Record<string, unknown>,
-        input: normalized.request.input,
-        tools: normalized.request.tools ?? [],
-        maxRounds: env.goalMaxRounds ?? 1000,
-        identity,
-        postUpstream,
-      } satisfies GoalCtx)
-    : rawEvents
-
-  // ------------------------------------------------------------------
+      fetchImpl,
+      renderUpstreamError: (status, body) => jsonResponse(upstreamErrorToOpenAI(status, body)),
+      renderNetworkError: (message) =>
+        jsonResponse(jsonError(502, message, "upstream_unreachable", "api_error")),
+    },
+    async (events) => {
   // Non-streaming: aggregate internally, respond with one JSON object.
   if (!wantsStream) {
     const builder = new ResponseBuilder()
@@ -496,7 +309,7 @@ export async function handleResponsesRequest(
       tool_choice: "auto",
       reasoning: { effort: normalized.request.reasoning?.effort ?? DEFAULT_REASONING_EFFORT, summary: "auto" },
     }
-    return new Response(JSON.stringify(builder.build(responseId, createdAt, echo)), {
+    return new Response(JSON.stringify(builder.build(responseId, createdAt, echo, resolved.id)), {
       status: 200,
       headers: { "content-type": "application/json" },
     })
@@ -666,6 +479,8 @@ export async function handleResponsesRequest(
       "x-accel-buffering": "no",
     },
   })
+    },
+  )
 }
 
 // Vercel handler shell (Node.js runtime, Web-standard fetch export).

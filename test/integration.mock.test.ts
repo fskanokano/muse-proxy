@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { handleChatRequest, type ChatDependencies } from "../api/chat"
-import { encodeReasoningDetails } from "../api/_lib/reasoning"
+import { encodeReasoningDetails } from "../api/_lib/reasoning.js"
 
 const ENV = { PROXY_API_KEY: "test-key" }
 const AUTH = { authorization: "Bearer test-key" }
@@ -70,24 +70,12 @@ describe("multi-turn integration", () => {
   it("turn 1: streams interleaved reasoning + text deltas and ends with [DONE]", async () => {
     mockUpstream([
       sseResponse([
-        { type: "response.output_item.added", item: { type: "reasoning", id: "rs_a" } },
-        { type: "response.reasoning_summary_text.delta", delta: "let me " },
-        { type: "response.reasoning_summary_text.delta", delta: "think" },
-        { type: "response.output_text.delta", delta: "The answer" },
-        { type: "response.output_text.delta", delta: " is 4." },
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "reasoning",
-            id: "rs_a",
-            encrypted_content: "ENC-A",
-            summary: [{ type: "summary_text", text: "let me think" }],
-          },
-        },
-        {
-          type: "response.completed",
-          response: { usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 } },
-        },
+        { choices: [{ index: 0, delta: { reasoning_content: "let me " } }] },
+        { choices: [{ index: 0, delta: { reasoning_content: "think" } }] },
+        { choices: [{ index: 0, delta: { content: "The answer" } }] },
+        { choices: [{ index: 0, delta: { content: " is 4." } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } },
       ]),
     ])
 
@@ -109,17 +97,12 @@ describe("multi-turn integration", () => {
       .join("")
     expect(content).toBe("The answer is 4.")
 
-    // exactly one reasoning_details chunk with the encrypted item
+    // oa-compat reasoning deltas carry no encrypted blob, so no
+    // reasoning_details replay chunk is synthesized at all.
     const details = chunks
       .map((c) => (c as { choices?: Array<{ delta?: { reasoning_details?: string } }> }).choices?.[0]?.delta?.reasoning_details)
       .filter(Boolean) as string[]
-    expect(details).toHaveLength(1)
-    const payload = JSON.parse(Buffer.from(details[0]!, "base64").toString("utf8")) as {
-      v: number
-      items: Array<{ id: string; encrypted_content: string; summary: string }>
-    }
-    expect(payload.v).toBe(1)
-    expect(payload.items).toEqual([{ id: "rs_a", summary: "let me think", encrypted_content: "ENC-A" }])
+    expect(details).toHaveLength(0)
 
     const last = chunks.at(-1) as { choices?: Array<{ finish_reason?: string }>; usage?: { total_tokens: number } }
     expect(last.choices?.[0]?.finish_reason).toBe("stop")
@@ -130,23 +113,9 @@ describe("multi-turn integration", () => {
     // ---- Turn 1: model decides to call the echo tool ----
     mockUpstream([
       sseResponse([
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "reasoning",
-            id: "rs_t1",
-            encrypted_content: "ENC-T1",
-            summary: [{ type: "summary_text", text: "need the echo tool" }],
-          },
-        },
-        {
-          type: "response.output_item.done",
-          item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "echo", arguments: "{\"text\":\"hi\"}" },
-        },
-        {
-          type: "response.completed",
-          response: { usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 } },
-        },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "echo", arguments: "{\"text\":\"hi\"}" } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+        { choices: [], usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } },
       ]),
     ])
 
@@ -189,8 +158,9 @@ describe("multi-turn integration", () => {
 
     mockUpstream([
       sseResponse([
-        { type: "response.output_text.delta", delta: "The tool said: echoed: hi" },
-        { type: "response.completed", response: { usage: { input_tokens: 40, output_tokens: 8, total_tokens: 48 } } },
+        { choices: [{ index: 0, delta: { content: "The tool said: echoed: hi" } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 40, completion_tokens: 8, total_tokens: 48 } },
       ]),
     ])
 
@@ -206,31 +176,36 @@ describe("multi-turn integration", () => {
     // ---- Assert exactly what the proxy sent upstream on turn 2 ----
     expect(calls).toHaveLength(2)
     const turn2RequestBody = JSON.parse(String(calls[1]!.init!.body)) as {
-      input: Array<Record<string, unknown>>
-      store: boolean
-      include: string[]
+      messages: Array<Record<string, unknown>>
+      model: string
+      stream: boolean
     }
 
     // Encrypted-reasoning replay is dropped (session-bound blobs are rejected
-    // upstream); only the function_call round-trip is replayed.
-    const types = turn2RequestBody.input.map((item) => ("role" in item ? item.role : item.type))
-    expect(types).toEqual(["user", "function_call", "function_call_output"])
+    // upstream); the wire is a chat messages array with the tool round-trip
+    // collapsed into assistant(tool_calls) + tool.
+    const roles = turn2RequestBody.messages.map((item) => item.role)
+    expect(roles).toEqual(["user", "assistant", "tool"])
 
-    expect(turn2RequestBody.input[1]).toEqual({
-      type: "function_call",
-      call_id: "call_1",
-      name: "echo",
-      arguments: "{\"text\":\"hi\"}",
+    expect(turn2RequestBody.messages[1]).toEqual({
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "call_1", type: "function", function: { name: "echo", arguments: "{\"text\":\"hi\"}" } }],
     })
-    expect(turn2RequestBody.input[2]).toEqual({
-      type: "function_call_output",
-      call_id: "call_1",
-      output: "echoed: hi",
+    expect(turn2RequestBody.messages[2]).toEqual({
+      role: "tool",
+      tool_call_id: "call_1",
+      content: "echoed: hi",
     })
 
-    // muse-specific fixed options on every request
-    expect(turn2RequestBody.store).toBe(false)
-    expect(turn2RequestBody.include).toEqual(["reasoning.encrypted_content"])
+    // The turn-2 replay must not resurrect session-bound reasoning blobs.
+    const serializedReplay = JSON.stringify(turn2RequestBody.messages)
+    expect(serializedReplay).not.toContain("rs_t1")
+    expect(serializedReplay).not.toContain("ENC-T1")
+
+    // oa-compat contract for every request (muse aliases onto deepseek)
+    expect(turn2RequestBody.model).toBe("deepseek-v4.1-flash-free")
+    expect(turn2RequestBody.stream).toBe(true)
   })
 
   it("three-turn long conversation: reasoning blobs dropped; tool round-trips replayed", async () => {
@@ -241,7 +216,7 @@ describe("multi-turn integration", () => {
     ])
 
     mockUpstream([
-      sseResponse([{ type: "response.completed", response: {} }]),
+      sseResponse([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }]),
     ])
 
     await handleChatRequest(
@@ -271,23 +246,32 @@ describe("multi-turn integration", () => {
       ENV,
     )
 
-    const body = JSON.parse(String(calls[0]!.init!.body)) as { input: Array<Record<string, unknown>> }
-    const reasoningItems = body.input.filter((item) => item.type === "reasoning")
+    const body = JSON.parse(String(calls[0]!.init!.body)) as { messages: Array<Record<string, unknown>> }
+    const roles = body.messages.map((item) => item.role)
+    expect(roles).toEqual(["user", "assistant", "tool", "user", "assistant", "user"])
 
     // Encrypted-reasoning replay is dropped entirely (session-bound blobs
     // are rejected upstream); multi-turn continues via text + tool history.
-    expect(reasoningItems).toEqual([])
+    const serialized = JSON.stringify(body.messages)
+    expect(serialized).not.toContain("rs_3")
+    expect(serialized).not.toContain("E3")
+    expect(serialized).not.toContain("one\\ntwo")
 
-    // The function_call round-trip from turn 1 is still replayed.
-    expect(body.input).toContainEqual({ type: "function_call", call_id: "c1", name: "toolA", arguments: "{}" })
-    expect(body.input).toContainEqual({ type: "function_call_output", call_id: "c1", output: "ok" })
+    // The function_call round-trip from turn 1 is still replayed, merged into
+    // a single assistant message.
+    expect(body.messages[1]).toEqual({
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "c1", type: "function", function: { name: "toolA", arguments: "{}" } }],
+    })
+    expect(body.messages[2]).toEqual({ role: "tool", tool_call_id: "c1", content: "ok" })
   })
 
   it("mid-stream upstream error surfaces as an error chunk and still closes cleanly", async () => {
     mockUpstream([
       sseResponse([
-        { type: "response.output_text.delta", delta: "partial" },
-        { type: "error", code: "overloaded", message: "upstream exploded" },
+        { choices: [{ index: 0, delta: { content: "partial" } }] },
+        { error: { code: "overloaded", message: "upstream exploded" } },
       ]),
     ])
     const res = await handleChatRequest(
@@ -313,7 +297,7 @@ describe("multi-turn integration", () => {
       return new Response(
         new ReadableStream({
           start(controller) {
-            controller.enqueue(new TextEncoder().encode("data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n"))
+            controller.enqueue(new TextEncoder().encode("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\n"))
             init?.signal?.addEventListener("abort", () => {
               upstreamAborted = true
               controller.close()

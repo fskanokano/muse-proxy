@@ -3,9 +3,9 @@
 // back into a FULL canonical Responses event lifecycle.
 
 import { describe, expect, it } from "vitest"
-import { OaCompatRaiser, isDonePayload, lowerChatUpstream, lowerInputToMessages, toolsToChatShape } from "../api/_lib/chat-upstream"
-import { MODELS, resolveModel, MODEL_MUSE, type UpstreamInputItem, type UpstreamTool } from "../api/_lib/types"
-import { appendClientTools } from "../api/_lib/tools"
+import { OaCompatRaiser, isDonePayload, lowerChatUpstream, lowerInputToMessages, toolsToChatShape } from "../api/_lib/chat-upstream.js"
+import { MODELS, resolveModel, MODEL_MUSE, type UpstreamInputItem, type UpstreamTool } from "../api/_lib/types.js"
+import { appendClientTools } from "../api/_lib/tools.js"
 import { modelsList } from "../api/models"
 
 describe("lowerInputToMessages", () => {
@@ -200,11 +200,17 @@ describe("effort clamping per model", () => {
     expect(none.reasoning_effort).toBe("low")
   })
 
-  it("clampEffortForModel: unknown values dropped, muse whitelist untouched", () => {
+  it("clampEffortForModel: unknown values dropped, muse alias clamps like deepseek", () => {
+    // muse now aliases deepseek-v4.1-flash-free: same effort whitelist, and
+    // "none" clamps to "low" instead of being passed through.
     const muse = resolveModel(MODEL_MUSE)
-    expect(muse.efforts).toContain("none")
+    expect(muse.efforts).toEqual(["low", "high", "max"])
     const garbage = lowerChatUpstream({ model: MODELS["space-bunny-free"]!, input: [], tools: [], effort: "ultra" })
     expect(garbage.reasoning_effort).toBeUndefined()
+    const medium = lowerChatUpstream({ model: MODELS[MODEL_MUSE]!, input: [], tools: [], effort: "medium" })
+    expect(medium.reasoning_effort).toBeUndefined()
+    const none = lowerChatUpstream({ model: MODELS[MODEL_MUSE]!, input: [], tools: [], effort: "none" })
+    expect(none.reasoning_effort).toBe("low")
   })
 })
 
@@ -258,14 +264,14 @@ describe("/v1/models catalog", () => {
     expect(byId.get("mimo-v2.6-flash-free")!.reasoning_levels).toEqual([])
     expect(byId.get("mimo-v2.6-flash-free")!.reasoning).toBe(true)
     expect(byId.get("space-bunny-free")!.reasoning_levels).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"])
-    expect(byId.get("muse-spark-1.3-contributor-free")!.reasoning_levels).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+    expect(byId.get("muse-spark-1.3-contributor-free")!.reasoning_levels).toEqual(["low", "high", "max"])
     expect(byId.get("step-5-preview-free")!.reasoning_levels).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"])
     expect(byId.get("step-5-preview-free")!.reasoning).toBe(true)
     expect(byId.get("deepseek-v4.1-flash-free")!.reasoning_levels).toEqual(["low", "high", "max"])
     expect(byId.get("deepseek-v4.1-flash-free")!.reasoning).toBe(true)
     expect(byId.get("glm-5.3-flash-free")!.reasoning_levels).toEqual(["low", "high", "max"])
     expect(byId.get("glm-5.3-flash-free")!.reasoning).toBe(true)
-    expect(byId.get("muse-spark-1.3-contributor-goal")!.reasoning_levels).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+    expect(byId.get("muse-spark-1.3-contributor-goal")!.reasoning_levels).toEqual(["low", "high", "max"])
     expect(byId.get("muse-spark-1.3-contributor-goal")!.reasoning).toBe(true)
   })
 })

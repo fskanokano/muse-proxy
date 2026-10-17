@@ -1,4 +1,4 @@
-// POST /v1/messages (rewritten to /api/messages) — Anthropic Messages API
+// POST /v1/messages (Supabase Edge Function `muse-proxy`) — Anthropic Messages API
 // facade, independent from the chat completions (api/chat.ts) and Responses
 // (api/responses.ts) facades.
 //
@@ -16,11 +16,10 @@ import { checkAuth } from "./_lib/auth.js"
 import { identityForCall } from "./_lib/identity.js"
 import { MessageRaiser, type AnthropicEvent } from "./_lib/messages-raise.js"
 import { lowerMessagesRequest } from "./_lib/messages-lower.js"
-import { HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse.js"
+import { HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS } from "./_lib/sse.js"
 import { exposedToolName, shouldExposeToolCall } from "./_lib/tools.js"
-import type { UpstreamEvent, UpstreamInputItem, UpstreamUsage } from "./_lib/types.js"
-import { MODEL_ID, OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT, resolveModel } from "./_lib/types.js"
-import { runGoalTurns, type GoalCtx } from "./_lib/goal.js"
+import type { UpstreamEvent, UpstreamUsage } from "./_lib/types.js"
+import { resolveModel } from "./_lib/types.js"
 import { handleOaCompatUpstream } from "./_lib/oa-compat.js"
 
 export interface MessagesEnv {
@@ -219,162 +218,28 @@ export async function handleMessagesRequest(
     return anthropicError(lowered.error.status, "invalid_request_error", lowered.error.message)
   }
 
-  // Model routing: the two new free models live on the oa-compat format
-  // (/v1/chat/completions upstream); muse keeps the untouched Responses path.
+  // Model routing: since the 2026-10-17 muse deprecation every model — muse
+  // and goal aliases included — rides the oa-compat chat/completions upstream
+  // (_lib/oa-compat.ts); the muse Responses mount is retired with it.
   const resolved = resolveModel((rawBody as { model?: unknown } | null)?.model)
-  if (resolved.upstream === "oa-compat") {
-    return handleOaCompatUpstream(
-      {
-        callId: messageId,
-        identity,
-        model: resolved,
-        input: lowered.request.input,
-        tools: lowered.request.tools ?? [],
-        effort: lowered.request.reasoning?.effort,
-        temperature: lowered.request.temperature,
-        topP: lowered.request.top_p,
-        maxOutputTokens: lowered.request.max_output_tokens,
-        signal: request.signal,
-        fetchImpl,
-        renderUpstreamError: (status, body) => upstreamErrorToAnthropic(status, body),
-        renderNetworkError: (message) => anthropicError(502, "api_error", message),
-      },
-      async (events) => {
-        // Non-streaming: aggregate internally, respond with one JSON message.
-        if (!wantsStream) {
-          const builder = new MessageBuilder()
-          builder.clientToolNames = lowered.clientToolNames
-          builder.toolChoice = clientToolChoice
-          for await (const event of events) {
-            if (event === "done") break
-            builder.addEvent(event)
-          }
-          if (builder.error) {
-            return anthropicError(502, "api_error", builder.error.message)
-          }
-          if (!builder.sawTerminalEvent) {
-            return anthropicError(502, "api_error", "upstream closed the stream before a terminal response event")
-          }
-          return new Response(JSON.stringify(builder.build(messageId, resolved.id)), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          })
-        }
-        // Streaming: raise each upstream event into Anthropic SSE events.
-        const encoder = new TextEncoder()
-        const raiser = new MessageRaiser({
-          messageId,
-          model: resolved.id,
-          clientToolNames: lowered.clientToolNames,
-          toolChoice: clientToolChoice,
-        })
-        const stream = new ReadableStream<Uint8Array>({
-          async start(controller) {
-            let closed = false
-            const push = (text: string) => {
-              if (!closed) controller.enqueue(encoder.encode(text))
-            }
-            const heartbeat = setInterval(() => push(HEARTBEAT_COMMENT), HEARTBEAT_INTERVAL_MS)
-            const frameEvent = (event: AnthropicEvent): string => {
-              const data = `data: ${JSON.stringify(event)}\n\n`
-              return `event: ${event.type}\n${data}`
-            }
-            try {
-              push(frameEvent(raiser.start()))
-              for await (const event of events) {
-                if (event === "done") break
-                if (event.type === "ping") continue
-                for (const out of raiser.handle(event as unknown as UpstreamEvent)) {
-                  push(frameEvent(out))
-                }
-              }
-              for (const out of raiser.finish()) {
-                push(frameEvent(out))
-              }
-            } catch (error) {
-              const message = error instanceof Error ? error.message : "stream interrupted"
-              push(frameEvent({ type: "error", error: { type: "api_error", message } }))
-            } finally {
-              clearInterval(heartbeat)
-              if (!closed) {
-                closed = true
-                controller.close()
-              }
-            }
-          },
-          cancel() {},
-        })
-        return new Response(stream, {
-          status: 200,
-          headers: {
-            "content-type": "text/event-stream; charset=utf-8",
-            "cache-control": "no-cache, no-transform",
-            connection: "keep-alive",
-            "x-accel-buffering": "no",
-          },
-        })
-      },
-    )
-  }
-
-  // 上游 POST 闭包 (首轮与 goal 续轮/judge 共用, 指纹头与 body 原型唯一来源)。
-  const postUpstream = (body: Record<string, unknown>): Promise<Response> =>
-    fetchImpl(UPSTREAM_URL, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${UPSTREAM_API_KEY}`,
-        "content-type": "application/json",
-        accept: "*/*",
-        "user-agent": UPSTREAM_USER_AGENT,
-        "x-opencode-session": identity.sessionId,
-        "x-opencode-session-id": identity.sessionId,
-        "x-session-affinity": identity.sessionId,
-        "x-session-id": identity.sessionId,
-        // The v2 client (2.0.29/2.0.30) does NOT send x-opencode-request, and
-        // re-adding the header trips the free-tier gate (403). The msg_ id
-        // stays local-only.
-        "x-opencode-client": OPENCODE_CLIENT,
-        "x-opencode-project": OPENCODE_PROJECT_ID,
-      },
-      body: JSON.stringify(body),
-      // Propagate client disconnects so we stop billing upstream tokens.
+  return handleOaCompatUpstream(
+    {
+      callId: messageId,
+      identity,
+      model: resolved,
+      input: lowered.request.input,
+      tools: lowered.request.tools ?? [],
+      effort: lowered.request.reasoning?.effort,
+      temperature: lowered.request.temperature,
+      topP: lowered.request.top_p,
+      maxOutputTokens: lowered.request.max_output_tokens,
+      goalMaxRounds: env.goalMaxRounds,
       signal: request.signal,
-    })
-  let upstream: Response
-  try {
-    // Identical opencode client header fingerprint as the other facades —
-    // the zen free tier gates on it regardless of which facade was used.
-    upstream = await postUpstream(lowered.request as unknown as Record<string, unknown>)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "network error"
-    return anthropicError(502, "api_error", `failed to reach opencode zen: ${message}`)
-  }
-
-  if (!upstream.ok || upstream.body === null) {
-    let upstreamJson: unknown = null
-    try {
-      upstreamJson = await upstream.json()
-    } catch {
-      upstreamJson = null
-    }
-    return upstreamErrorToAnthropic(upstream.status, upstreamJson)
-  }
-
-  const rawEvents: AsyncGenerator<Record<string, unknown> | "done"> = parseUpstreamSse(upstream.body)
-  // goal 实验模型: 无工具干净收尾时过 judge, 判未完成则自动续轮 (见 _lib/goal.ts)。
-  // 非 goal 模型保持逐字节旧行为。
-  const events: AsyncGenerator<Record<string, unknown> | "done"> = resolved.isGoal
-    ? runGoalTurns(rawEvents, {
-        model: resolved,
-        baseBody: lowered.request as unknown as Record<string, unknown>,
-        input: lowered.request.input,
-        tools: lowered.request.tools ?? [],
-        maxRounds: env.goalMaxRounds ?? 1000,
-        identity,
-        postUpstream,
-      } satisfies GoalCtx)
-    : rawEvents
-
+      fetchImpl,
+      renderUpstreamError: (status, body) => upstreamErrorToAnthropic(status, body),
+      renderNetworkError: (message) => anthropicError(502, "api_error", message),
+    },
+    async (events) => {
   // ------------------------------------------------------------------
   // Non-streaming: aggregate internally, respond with one JSON message.
   // ------------------------------------------------------------------
@@ -395,7 +260,7 @@ export async function handleMessagesRequest(
       // truncated, so never report it as a complete message.
       return anthropicError(502, "api_error", "upstream closed the stream before a terminal response event")
     }
-    return new Response(JSON.stringify(builder.build(messageId, MODEL_ID)), {
+    return new Response(JSON.stringify(builder.build(messageId, resolved.id)), {
       status: 200,
       headers: { "content-type": "application/json" },
     })
@@ -407,7 +272,7 @@ export async function handleMessagesRequest(
   // ends with message_stop, per the Anthropic contract).
   // ------------------------------------------------------------------
   const encoder = new TextEncoder()
-  const raiser = new MessageRaiser({ messageId, model: MODEL_ID, clientToolNames: lowered.clientToolNames, toolChoice: clientToolChoice })
+  const raiser = new MessageRaiser({ messageId, model: resolved.id, clientToolNames: lowered.clientToolNames, toolChoice: clientToolChoice })
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -463,6 +328,8 @@ export async function handleMessagesRequest(
       "x-accel-buffering": "no",
     },
   })
+    },
+  )
 }
 
 // Vercel handler shell (Node.js runtime, Web-standard fetch export).

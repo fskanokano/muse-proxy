@@ -6,18 +6,20 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { handleMessagesRequest, type MessagesDependencies } from "../api/messages"
-import { lowerMessagesRequest } from "../api/_lib/messages-lower"
-import { MODEL_ID } from "../api/_lib/types"
-import { OPENCODE_BUILTIN_TOOLS } from "../api/_lib/tools"
+import { lowerMessagesRequest } from "../api/_lib/messages-lower.js"
+import { MODEL_ID, MODEL_DEEPSEEK } from "../api/_lib/types.js"
+import { OPENCODE_BUILTIN_TOOLS } from "../api/_lib/tools.js"
+
+const MODEL_WIRE = MODEL_DEEPSEEK
 
 const ENV = { PROXY_API_KEY: "test-key" }
 const AUTH = { "x-api-key": "test-key" }
 
 type FetchCall = { url: string; init?: RequestInit }
 
-function sseResponse(events: Array<Record<string, unknown>>): Response {
+function sseResponse(events: Array<Record<string, unknown>>, withDone = true): Response {
   const lines = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("")
-  return new Response(lines + "data: [DONE]\n\n", {
+  return new Response(lines + (withDone ? "data: [DONE]\n\n" : ""), {
     status: 200,
     headers: { "content-type": "text/event-stream" },
   })
@@ -268,14 +270,11 @@ describe("messages endpoint integration", () => {
   it("non-streaming: aggregates text content, stop_reason, and usage; sends the full fingerprint upstream", async () => {
     mockUpstream([
       sseResponse([
-        { type: "response.created", response: { id: "resp_up_m1", usage: null } },
-        { type: "response.reasoning_summary_text.delta", delta: "pondering" },
-        { type: "response.output_text.delta", delta: "Hello " },
-        { type: "response.output_text.delta", delta: "there" },
-        {
-          type: "response.completed",
-          response: { usage: { input_tokens: 12, output_tokens: 8, total_tokens: 20 } },
-        },
+        { choices: [{ index: 0, delta: { reasoning_content: "pondering" } }] },
+        { choices: [{ index: 0, delta: { content: "Hello " } }] },
+        { choices: [{ index: 0, delta: { content: "there" } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 } },
       ]),
     ])
 
@@ -298,26 +297,27 @@ describe("messages endpoint integration", () => {
     ])
     expect(body.usage).toEqual({ input_tokens: 12, output_tokens: 8 })
 
-    // Upstream fingerprint contract identical to the other facades.
+    // Upstream fingerprint contract identical to the other facades; muse now
+    // aliases onto deepseek on the oa-compat wire.
     const headers = (calls[0]!.init!.headers ?? {}) as Record<string, string>
     expect(headers["user-agent"]).toContain("opencode/")
     expect(headers["x-opencode-client"]).toBe("cli")
     const upstreamBody = JSON.parse(String(calls[0]!.init!.body)) as Record<string, unknown>
-    expect(upstreamBody.model).toBe(MODEL_ID)
+    expect(upstreamBody.model).toBe(MODEL_WIRE)
     expect(upstreamBody.stream).toBe(true)
-    expect(upstreamBody.store).toBe(false)
-    expect(upstreamBody.include).toEqual(["reasoning.encrypted_content"])
-    expect(upstreamBody.prompt_cache_key).toBe(headers["x-opencode-session"])
+    expect(upstreamBody.reasoning_effort).toBe("high")
     expect(upstreamBody.tool_choice).toBe("auto")
     expect(upstreamBody.tools as unknown[]).toHaveLength(OPENCODE_BUILTIN_TOOLS.length)
-    expect(upstreamBody.max_output_tokens).toBe(128)
+    expect((upstreamBody.messages as unknown[]).length).toBeGreaterThan(0)
+    expect(upstreamBody.max_tokens).toBe(128)
   })
 
   it("non-streaming: tool_use blocks map stop_reason to tool_use", async () => {
     mockUpstream([
       sseResponse([
-        { type: "response.output_item.done", item: { type: "function_call", call_id: "call_x", name: "get_weather", arguments: "{\"city\":\"上海\"}" } },
-        { type: "response.completed", response: { usage: { input_tokens: 10, output_tokens: 5 } } },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_x", type: "function", function: { name: "get_weather", arguments: "{\"city\":\"上海\"}" } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+        { choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } },
       ]),
     ])
     const res = await handleMessagesRequest(
@@ -333,18 +333,20 @@ describe("messages endpoint integration", () => {
     expect(body.content).toEqual([{ type: "tool_use", id: "call_x", name: "get_weather", input: { city: "上海" } }])
   })
 
-  it("non-streaming: upstream failure event becomes a 502 Anthropic error", async () => {
-    mockUpstream([sseResponse([{ type: "response.failed", response: { error: { code: "provider_error", message: "boom" } } }])])
+  it("non-streaming: upstream non-2xx becomes a 502 Anthropic error", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { message: "boom" } }), { status: 503 })) as typeof fetch
     const res = await handleMessagesRequest(post({ max_tokens: 8, messages: [{ role: "user", content: "hi" }] }), ENV)
     expect(res.status).toBe(502)
     const body = (await res.json()) as { type: string; error: { type: string; message: string } }
     expect(body.type).toBe("error")
     expect(body.error.type).toBe("api_error")
-    expect(body.error.message).toBe("boom")
+    expect(body.error.message).toContain("boom")
   })
 
   it("non-streaming: upstream EOF without a terminal event returns 502", async () => {
-    mockUpstream([sseResponse([{ type: "response.output_text.delta", delta: "partial" }])])
+    // EOF mid-stream: content frames but no finish chunk and no [DONE].
+    mockUpstream([sseResponse([{ choices: [{ index: 0, delta: { content: "partial" } }] }], false)])
     const res = await handleMessagesRequest(post({ max_tokens: 8, messages: [{ role: "user", content: "hi" }] }), ENV)
     expect(res.status).toBe(502)
     const body = (await res.json()) as { error: { message: string } }
@@ -354,12 +356,11 @@ describe("messages endpoint integration", () => {
   it("streaming: emits the canonical Anthropic event sequence with event:/data: framing and no [DONE]", async () => {
     mockUpstream([
       sseResponse([
-        { type: "response.created", response: { id: "resp_s_m1" } },
-        { type: "response.reasoning_summary_text.delta", delta: "hmm " },
-        { type: "response.output_text.delta", delta: "He" },
-        { type: "response.output_text.delta", delta: "llo" },
-        { type: "response.completed", response: { usage: { input_tokens: 3, output_tokens: 2 } } },
-        { type: "ping" },
+        { choices: [{ index: 0, delta: { reasoning_content: "hmm " } }] },
+        { choices: [{ index: 0, delta: { content: "He" } }] },
+        { choices: [{ index: 0, delta: { content: "llo" } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } },
       ]),
     ])
 
@@ -410,9 +411,10 @@ describe("messages endpoint integration", () => {
   it("streaming: tool calls surface as tool_use blocks with input_json_delta", async () => {
     mockUpstream([
       sseResponse([
-        { type: "response.output_text.delta", delta: "Let me check." },
-        { type: "response.output_item.done", item: { type: "function_call", call_id: "call_y", name: "get_weather", arguments: "{\"city\":\"上海\"}" } },
-        { type: "response.completed", response: { usage: { input_tokens: 9, output_tokens: 7 } } },
+        { choices: [{ index: 0, delta: { content: "Let me check." } }] },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_y", type: "function", function: { name: "get_weather", arguments: "{\"city\":\"上海\"}" } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+        { choices: [], usage: { prompt_tokens: 9, completion_tokens: 7, total_tokens: 16 } },
       ]),
     ])
     const res = await handleMessagesRequest(post({ max_tokens: 64, messages: [{ role: "user", content: "hi" }], stream: true }), ENV)
@@ -429,7 +431,7 @@ describe("messages endpoint integration", () => {
   })
 
   it("streaming: upstream EOF without a terminal event surfaces an Anthropic error event", async () => {
-    mockUpstream([sseResponse([{ type: "response.output_text.delta", delta: "truncat" }])])
+    mockUpstream([sseResponse([{ choices: [{ index: 0, delta: { content: "truncat" } }] }], false)])
     const res = await handleMessagesRequest(post({ max_tokens: 64, messages: [{ role: "user", content: "hi" }], stream: true }), ENV)
     const text = await res.text()
     expect(text).toContain("upstream_stream_truncated")
@@ -449,8 +451,8 @@ describe("messages endpoint integration", () => {
     expect(body.error.type).toBe("rate_limit_error")
   })
 
-  it("propagates multi-turn replay items to the upstream body in order", async () => {
-    mockUpstream([sseResponse([{ type: "response.completed", response: {} }])])
+  it("propagates multi-turn replay messages to the upstream body in order", async () => {
+    mockUpstream([sseResponse([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }])])
     await handleMessagesRequest(
       post({
         max_tokens: 64,
@@ -463,9 +465,11 @@ describe("messages endpoint integration", () => {
       }),
       ENV,
     )
-    const body = JSON.parse(String(calls[0]!.init!.body)) as { input: Array<Record<string, unknown>> }
-    const kinds = body.input.map((item) => ("role" in item ? item.role : item.type))
+    const body = JSON.parse(String(calls[0]!.init!.body)) as { messages: Array<Record<string, unknown>> }
+    const kinds = body.messages.map((item) => item.role)
     expect(kinds).toEqual(["system", "user", "assistant", "user"])
-    expect(body.input[0]).toEqual({ role: "system", content: "be terse" })
+    expect(body.messages[0]).toEqual({ role: "system", content: "be terse" })
+    // The assistant text block is replayed as a plain chat content string.
+    expect(body.messages[2]).toEqual({ role: "assistant", content: "hello" })
   })
 })

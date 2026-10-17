@@ -1,5 +1,5 @@
-// GET /v1/models (rewritten to /api/models) — catalog of the free models the
-// proxy serves, OpenAI models-list format. muse-spark keeps its historical
+// GET /v1/models (Supabase Edge Function `muse-proxy`) — catalog of the free models
+// the proxy serves, OpenAI models-list format. muse-spark keeps its historical
 // "any model id maps here" note; the two new free models route to the
 // oa-compat upstream (see _lib/types.ts MODELS).
 //
@@ -62,7 +62,6 @@ export function handleModelsRequest(request: Request, env: ModelsEnv): Response 
     headers: { "content-type": "application/json" },
   })
 }
-
 async function handler(request: Request): Promise<Response> {
   return handleModelsRequest(request, { PROXY_API_KEY: process.env.PROXY_API_KEY })
 }

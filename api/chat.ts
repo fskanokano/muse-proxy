@@ -1,4 +1,4 @@
-// POST /v1/chat/completions (rewritten to /api/chat) — the main facade.
+// POST /v1/chat/completions (Supabase Edge Function `muse-proxy`) — the main facade.
 //
 // Pipeline: auth -> lower (chat -> Responses) -> fetch opencode zen -> raise
 // (Responses SSE -> chat chunks) -> SSE out (or aggregated JSON for
@@ -6,21 +6,19 @@
 
 import { checkAuth } from "./_lib/auth.js"
 import { errorChunk, jsonError, upstreamErrorToOpenAI } from "./_lib/errors.js"
-import { runGoalTurns, type GoalCtx } from "./_lib/goal.js"
 import { identityForCall } from "./_lib/identity.js"
 import { lowerRequest } from "./_lib/lower.js"
 import { createRaiser } from "./_lib/raise.js"
-import { chunkToSse, DONE_LINE, HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS, parseUpstreamSse } from "./_lib/sse.js"
-import { exposedToolName, shouldExposeToolCall } from "./_lib/tools.js"
-import type { ChatToolCall, ChatUsage, UpstreamEvent, UpstreamInputItem } from "./_lib/types.js"
-import { resolveModel } from "./_lib/types.js"
-import { usageToChat } from "./_lib/usage.js"
 import { handleOaCompatUpstream } from "./_lib/oa-compat.js"
-import { MODEL_ID, MODEL_NAME, OPENCODE_CLIENT, OPENCODE_PROJECT_ID, UPSTREAM_API_KEY, UPSTREAM_URL, UPSTREAM_USER_AGENT } from "./_lib/types.js"
+import { chunkToSse, DONE_LINE, HEARTBEAT_COMMENT, HEARTBEAT_INTERVAL_MS } from "./_lib/sse.js"
+import { exposedToolName, shouldExposeToolCall } from "./_lib/tools.js"
+import type { ChatToolCall, ChatUsage, UpstreamEvent } from "./_lib/types.js"
+import { MODEL_NAME, resolveModel } from "./_lib/types.js"
+import { usageToChat } from "./_lib/usage.js"
 
 export interface ChatEnv {
   PROXY_API_KEY?: string
-  /** goal 自动续轮上限 (MP_GOAL_MAX_ROUNDS, 缺省 1000, 0 = 与 muse 行为一致)。 */
+  /** goal 自动续轮上限 (MP_GOAL_MAX_ROUNDS, 缺省 1000, 0 = 与非 goal 模型一致)。 */
   goalMaxRounds?: number
 }
 
@@ -166,44 +164,14 @@ export async function handleChatRequest(
     return jsonResponse(jsonError(lowered.error.status, lowered.error.message, lowered.error.code))
   }
 
-  // 上游 POST 闭包 (首轮与 goal 续轮/judge 共用, 指纹头唯一来源)。
-  // 定义在 oa-compat 分支之前: goal 模型永远走 muse 路径, 但闭包必须先存在。
-  const postUpstream = (body: Record<string, unknown>): Promise<Response> =>
-    fetchImpl(UPSTREAM_URL, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${UPSTREAM_API_KEY}`,
-        "content-type": "application/json",
-        accept: "*/*",
-        // Free tier is UA-gated; without a CLI-faithful UA upstream rejects.
-        "user-agent": UPSTREAM_USER_AGENT,
-        // Required by the responses endpoint (MissingSessionID otherwise).
-        // Stateless proxy: opencode-shaped ses_/msg_ ids per upstream call,
-        // mirroring the shipped client (see _lib/identity.ts for the exact
-        // shape the gate now enforces).
-        "x-opencode-session": identity.sessionId,
-        "x-opencode-session-id": identity.sessionId,
-        "x-session-affinity": identity.sessionId,
-        "x-session-id": identity.sessionId,
-        // The v2 client (2.0.29/2.0.30) does NOT send x-opencode-request, and
-        // re-adding the header trips the free-tier gate (403). The msg_ id
-        // stays local-only.
-        "x-opencode-client": OPENCODE_CLIENT,
-        "x-opencode-project": OPENCODE_PROJECT_ID,
-      },
-      body: JSON.stringify(body),
-      // Propagate client disconnects so we stop billing upstream tokens.
-      signal: request.signal,
-    })
-
-  // Model routing: the two new free models live on the oa-compat format
-  // (/v1/chat/completions upstream); muse keeps the untouched Responses path.
+  // Model routing: since the 2026-10-17 muse deprecation every model — muse
+  // and goal aliases included — rides the oa-compat chat/completions upstream
+  // (_lib/oa-compat.ts); the muse Responses mount is retired with it.
   const resolved = resolveModel((chatBody as { model?: unknown }).model)
-  if (resolved.upstream === "oa-compat") {
-    return handleOaCompatUpstream(
-      {
-        callId: completionId,
-        identity,
+  return handleOaCompatUpstream(
+    {
+      callId: completionId,
+      identity,
         model: resolved,
         input: lowered.request.input,
         tools: lowered.request.tools ?? [],
@@ -294,130 +262,13 @@ export async function handleChatRequest(
         })
       },
     )
-  }
-
-  let upstream: Response
-  try {
-    // Full opencode client header fingerprint (captured from a real 2.0.28 CLI
-    // request): version-scoped UA, client flag, opencode-shaped session ids,
-    // project key. The zen free tier rejects any deviation with 403
-    // FreeTierError. The current client stamps the same session id under four
-    // names (session / session-id / affinity / x-session-id) — mirrored here.
-    upstream = await postUpstream(lowered.request as unknown as Record<string, unknown>)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "network error"
-    return jsonResponse(jsonError(502, `failed to reach opencode zen: ${message}`, "upstream_unreachable", "api_error"))
-  }
-
-  if (!upstream.ok || upstream.body === null) {
-    let upstreamJson: unknown = null
-    try {
-      upstreamJson = await upstream.json()
-    } catch {
-      upstreamJson = null
-    }
-    return jsonResponse(upstreamErrorToOpenAI(upstream.status, upstreamJson))
-  }
-
-  const rawEvents: AsyncGenerator<Record<string, unknown> | "done"> = parseUpstreamSse(upstream.body)
-  // goal 实验模型: 无工具干净收尾时过 judge, 判未完成则自动续轮 (见 _lib/goal.ts)。
-  // 非 goal 模型保持逐字节旧行为。
-  const events: AsyncGenerator<Record<string, unknown> | "done"> = resolved.isGoal
-    ? runGoalTurns(rawEvents, {
-        model: resolved,
-        baseBody: lowered.request as unknown as Record<string, unknown>,
-        input: lowered.request.input,
-        tools: lowered.request.tools ?? [],
-        maxRounds: env.goalMaxRounds ?? 1000,
-        identity,
-        postUpstream,
-      } satisfies GoalCtx)
-    : rawEvents
-
-  // ------------------------------------------------------------------
-  // Non-streaming: aggregate internally, respond with one JSON object.
-  // ------------------------------------------------------------------
-  if (!wantsStream) {
-    const builder = new CompletionBuilder()
-    builder.clientToolNames = lowered.clientToolNames
-    builder.toolChoice = clientToolChoice
-    for await (const event of events) {
-      if (event === "done") break
-      builder.addEvent(event as unknown as UpstreamEvent)
-    }
-    if (!builder.sawTerminalEvent) {
-      return jsonResponse(jsonError(502, "upstream closed the stream before a terminal response event", "upstream_stream_truncated", "api_error"))
-    }
-    return new Response(JSON.stringify(builder.build(completionId, created, resolved.id)), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    })
-  }
-
-  // ------------------------------------------------------------------
-  // Streaming: raise each upstream event into chat chunks over SSE.
-  // ------------------------------------------------------------------
-  const encoder = new TextEncoder()
-  const raiser = createRaiser({ id: completionId, created, model: resolved.id, clientToolNames: lowered.clientToolNames, toolChoice: clientToolChoice })
-
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      let closed = false
-      const push = (text: string) => {
-        if (!closed) controller.enqueue(encoder.encode(text))
-      }
-
-      // Edge platforms may buffer; the heartbeat comment keeps
-      // intermediaries from closing an idle connection while the model
-      // thinks. The timer self-cleans when the stream closes.
-      const heartbeat = setInterval(() => push(HEARTBEAT_COMMENT), HEARTBEAT_INTERVAL_MS)
-
-      try {
-        push(chunkToSse({
-          id: completionId,
-          object: "chat.completion.chunk",
-          created,
-          model: resolved.id,
-          choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
-        }))
-
-        for await (const event of events) {
-          if (event === "done") break
-          for (const chunkOut of raiser.handle(event as unknown as UpstreamEvent)) {
-            push(chunkToSse(chunkOut))
-          }
-        }
-        const finishChunks = raiser.finish()
-        for (const chunkOut of finishChunks) push(chunkToSse(chunkOut))
-        push(DONE_LINE)
-      } catch (error) {
-        // Mid-stream failure: surface an OpenAI-ish error chunk, then close.
-        const message = error instanceof Error ? error.message : "stream interrupted"
-        push(chunkToSse(errorChunk(completionId, created, resolved.id, message)))
-        push(DONE_LINE)
-      } finally {
-        clearInterval(heartbeat)
-        if (!closed) {
-          closed = true
-          controller.close()
-        }
-      }
-    },
-    cancel() {
-      // Client disconnected; request.signal already aborts the upstream fetch.
-    },
-  })
-
-  return new Response(stream, {
-    status: 200,
-    headers: {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-      "x-accel-buffering": "no",
-    },
-  })
 }
+
+// Re-exported for tests.
+export { MODEL_NAME }
+
+// Local type re-exports used by integration tests.
+export type { ChatToolCall }
 
 // Vercel handler shell (Node.js runtime, Web-standard fetch export).
 async function handler(request: Request): Promise<Response> {
@@ -426,9 +277,3 @@ async function handler(request: Request): Promise<Response> {
 
 export default { fetch: handler }
 export { handler as POST, handler as GET }
-
-// Re-exported for tests.
-export { MODEL_NAME }
-
-// Local type re-exports used by integration tests.
-export type { ChatToolCall }
