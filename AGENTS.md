@@ -1,103 +1,90 @@
-# AGENTS.md
+# AGENTS.md(egress 分支)
 
-Compressed map for opencode sessions. Long-form source of truth: `README.md`
-(troubleshooting手册 §1–§10 documents every "whole proxy died" incident and the
-new-model checklist). Verify claims there before changing pipeline logic.
+opencode 会话的工作地图。长文真相源是 `README.md`(排查手册 §1–§10 记录了每一次
+"整代理全挂"事故与接入新模型的多分支清单);改管线逻辑前先到 README 核实。
 
-## Three-branch architecture (the #1 thing to get right)
+## 本仓库最重要的结构事实:三分支架构
 
-Same proxy, three hosts; branches are NOT identical and are synced manually:
+同一个代理,三个部署宿主;分支之间**内容并不相同**,靠人工同步:
 
-- **egress** (default working branch): local persistent deployment (Docker
-  host-network). Implementation lives in `supabase/functions/muse-proxy/**`;
-  `api/*.ts` are thin Vercel shells re-exporting it. Branch adds `server/`
-  (local runtime incl. egress-exit-IP rotation via `server/egress.ts`),
-  `admin-web/`, `Dockerfile` + `docker-compose.yml`, `scripts/mp-smoke.ts`,
-  `test/egress*.test.ts`.
-- **supabase**: same `supabase/functions/muse-proxy/**` tree deployed as a
-  Supabase Edge Function; no `server/` tree. Also carries `api/` shells.
-- **main**: Vercel form. Real code lives in `api/_lib/*.ts`; facades
-  `api/{chat,responses,messages,models}.ts` have Vercel handler tails
-  (`export default { fetch }` + `POST`/`GET`). `vercel.json` rewrites
-  `/v1/*` → `/api/*`.
+- **egress(当前分支)**:本机常驻部署(Docker host 网络)。实现本体在
+  `supabase/functions/muse-proxy/**`;`api/*.ts` 是薄 Vercel 外壳(re-export +
+  handler 尾巴)。本分支独有:`server/`(本地运行时,含出口 IP 轮换
+  `server/egress.ts`)、`admin-web/`、`Dockerfile` + `docker-compose.yml`、
+  `scripts/mp-*.ts`、`test/egress*.test.ts`。
+- **supabase**:同一棵 `supabase/functions/muse-proxy/**` 部署为 Supabase Edge
+  Function;没有 `server/`,也没有 `scripts/mp-*`。
+- **main**:Vercel 形态。实现本体在 `api/_lib/*.ts`;门面
+  `api/{chat,responses,messages,models}.ts` 带 Vercel handler 壳尾
+  (`export default { fetch }` + `POST`/`GET`)。`vercel.json` 把
+  `/v1/*` 重写到 `/api/*`,后三者 `maxDuration: 300`。
 
-Sync rule (README §7.4): every model/pipeline change lands on **all three
-branches**. egress-only files never propagate. If a "model disappears" after
-switching branches, first check
-`git diff origin/<branch>..<branch> -- '*types.ts'`.
+同步规则(README §7.4):**每个模型/管线变更必须三条分支都落地**。egress 独有
+文件绝不外流到另外两线。切换分支后发现"模型消失",先查
+`git diff origin/<分支>..<分支> -- '*types.ts'`,别急着怀疑上游。
 
-## Import-specifier quirks (break tsc if done wrong)
+## 导入 specifier 陷阱(弄错直接 break tsc)
 
-- `supabase/functions/muse-proxy/**` imports use explicit `.ts` specifiers
-  (Deno resolver). tsconfig sets `allowImportingTsExtensions` for it.
-- On **main**, `api/_lib/*` import each other via `.js` specifiers that
-  resolve to the `.ts` files. Never create real `.js` files there (tsc fails
-  with TS7016, `allowJs` is off).
-- Deno entrypoints `supabase/functions/muse-proxy/index.ts`,
-  `scripts/serve-edge.ts`, `scripts/fake-supabase.ts` are EXCLUDED from
-  `tsc --noEmit`; typecheck them with `bun run typecheck:edge` (deno check).
-  Deno is not installed locally: use `npx --yes deno@latest check|bundle …`.
+- `supabase/functions/muse-proxy/**` 的 import 必须写显式 `.ts` specifier
+  (Deno 解析器要求;tsconfig 已为此开 `allowImportingTsExtensions`)。
+- 在 main 分支上,`api/_lib/*` 之间互相 import 用 `.js` specifier、解析到同名
+  `.ts` 文件;**绝不创建真实 `.js` 文件**(tsc 报 TS7016,`allowJs` 是关的)。
+- Deno 入口 `supabase/functions/muse-proxy/index.ts`、`scripts/serve-edge.ts`、
+  `scripts/fake-supabase.ts` 被 `tsc --noEmit` 排除;用 `bun run typecheck:edge`
+  (deno check)覆盖。Deno 未装,用 `npx --yes deno@latest check|bundle …`。
 
-## Commands
+## 命令
 
-- Gate for any change: `bun run typecheck && bun run test` and, on
-  supabase/egress trees, `bun run typecheck:edge`. No lint/format/CI config.
-- `bun run test` is fully mock-upstream (vitest; `test/e2e.local.test.ts` and
-  `integration.mock` spin their own local HTTP servers) — no network needed.
-  Test counts differ per branch by design: egress 217 / supabase 208 /
-  main 192. Single file: `bunx vitest run test/<name>.test.ts`.
-- Real-upstream smokes (need `.env` + network): `bun run smoke`,
-  `smoke:responses`, `smoke:messages`, `smoke:newmodels`,
-  `smoke:efforts`, `smoke:tools`, `smoke:openminis`, `eval`.
-  `smoke:newmodels [model …] [--steps=chat,chat-stream,…]` shards its matrix.
-- Local server (egress): load `.env` (PROXY_API_KEY, MP_ADMIN_PASSWORD,
-  MP_PORT) and `bun run mp:serve` = `tsx server/main.ts`:
+- 任何改动过门禁:`bun run typecheck && bun run test`,本分支还要
+  `bun run typecheck:edge`(tsc 覆盖面含 `server/**`)。仓库无 lint/format/CI。
+- `bun run test` 全 mock 上游(vitest;`test/e2e.local.test.ts` 与
+  `integration.mock` 自己起本地 HTTP 服务)——**无需联网**。本分支 217 个。
+  单文件:`bunx vitest run test/<name>.test.ts`。
+- 真上游冒烟(需 `.env` 与网络):`bun run smoke`、`smoke:responses`、
+  `smoke:messages`、`smoke:newmodels`、`smoke:efforts`、`smoke:tools`、
+  `smoke:openminis`、`eval`。矩阵大可分片:
+  `bun run smoke:newmodels [模型…] [--steps=chat,chat-stream,…]`。
+- 本地起服:`bun run mp:serve` = `tsx server/main.ts`,读 `.env`
+  (PROXY_API_KEY、MP_ADMIN_PASSWORD、MP_PORT):
   ```bash
   setsid env $(grep -v '^#' .env | xargs) MP_PORT=18099 \
     nohup bun run mp:serve > /tmp/opencode/mp-serve.log 2>&1 &
   ```
-- Smoke against it: `set -a; . ./.env; set +a;
-  MP_BASE=http://127.0.0.1:18099 bun run scripts/mp-smoke.ts` (13 checks).
-  Do NOT smoke against the standing 18091 docker container — it may hold a
-  stale/key-mismatched process; start a fresh instance on a free port.
-- Supabase-only helpers (`serve:edge`, `serve:fake`, `deploy:functions`) exist
-  in package.json but are irrelevant on main/egress work.
+- 对它冒烟:`set -a; . ./.env; set +a;
+  MP_BASE=http://127.0.0.1:18099 bun run scripts/mp-smoke.ts`(13 项:三门面 +
+  admin + egress 副出口 + muse SSE)。**别对常驻 18091 docker 容器冒烟**——
+  可能是陈旧/密钥不匹配进程;空闲端口开新实例。
 
-## Upstream discipline (why "innocent changes" kill everything)
+## 上游纪律(为什么"看起来无害的改动"会全挂)
 
-All current outbound traffic goes to
-`POST https://opencode.ai/inference/openai/v1/chat/completions` (oa-compat
-chat). Retired: Responses direct (`/inference/v1/responses` — all models),
-muse direct (model deprecated), network mount `/inference/v1/chat`.
+当前出站全部走
+`POST https://opencode.ai/inference/openai/v1/chat/completions`(oa-compat
+chat)。已退役:Responses 直发(`/inference/v1/responses`,全部模型)、muse
+直发(模型弃用)、网络挂载 `/inference/v1/chat`。
 
-Three hard gates, each a past outage (README §2–§8):
+三道硬门禁,每道都是过去的真实事故(README §2–§8),位置在本分支
+`supabase/functions/muse-proxy/_lib/` 下:
 
-1. **Free tier requires `stream:true`** — `stream:false` → 403 FreeTierError.
-   This is why the goal model's judge streams and aggregates. `openssl`-level
-   detail lives in `_lib/oa-compat.ts` (`OaCompatRaiser.finishStream(done |
-   eof)` also guards truncated-frame handling).
-2. **Client fingerprint** (UA `opencode/<channel>/<version>/<client>`,
-   session-id encoding, full header set) is forged in `_lib/identity.ts` /
-   `_lib/types.ts`. Match the real client's shape (source snapshots live in
-   `/tmp/opencode/src` when present); do not "clean up" these constants.
-3. **Model routing**: `resolveModel` in `_lib/types.ts` — `muse*`, goal and
-   ANY unknown id alias to `deepseek-v4.1-flash-free` via `upstreamId`
-   (upstream sees deepseek, client sees its own id echoed back).
-   `step-5-preview-free` is upstream-dead but intentionally kept cataloged.
+1. **免费层要求 `stream:true`**——`stream:false` → 403 FreeTierError。goal
+   模型的 judge 因此流式聚合;`oa-compat.ts` 的
+   `OaCompatRaiser.finishStream(done | eof)` 同时守截断帧。
+2. **客户端指纹**(UA `opencode/<channel>/<version>/<client>`、session-id
+   编码、完整头集合)在 `types.ts` / `identity.ts` 伪造;对照真实客户端形状
+   (本机 /tmp/opencode/src 有 v2.0.32 源码快照时核对),**别"顺手清理"常量**。
+3. **模型路由**:`types.ts` 的 `resolveModel`——`muse*`、goal 与任意未知 id
+   经 `upstreamId` 别名到 `deepseek-v4.1-flash-free`(上游看到 deepseek,
+   客户端看到自己的 id 回显);`step-5-preview-free` 上游已死,目录故意保留。
 
-Adding a model = multi-file, multi-branch checklist (README §7.2): `MODELS`
-catalog + `resolveModel` aliasing + `.env`-independent tests + smoke scripts +
-README. Probe the real upstream FIRST with one of `scripts/probe-*.ts` as
-template before implementing.
+接入新模型 = 多文件多分支清单(README §7.2):`MODELS` 目录 + `resolveModel`
+别名 + 不依赖 .env 的测试 + 冒烟脚本 + README。**动实现前先用
+`scripts/probe-*.ts` 当模板打真上游**。
 
-## Operational gotchas
+## 运维细节
 
-- `.env` is gitignored and machine-specific; `.env.example` documents every
-  var incl. `MP_GOAL_MAX_ROUNDS` (goal auto-continuation cap, 0–1000).
-- glm requests can fail transiently with 429 `upstream_rate_limited`
-  ("Endpoint is unavailable") — retry the smoke before diagnosing.
-- Zero runtime deps by design (only `tsx` on egress); heavy deps are
-  neither wanted nor anywhere in the pipeline.
-- Commit messages: `<type>: <中文或英文摘要>`, type ∈ feat/fix/sync.
-- Output logs land in /tmp/opencode on this host; keep build artifacts
-  (`supabase/.temp` from `bundle:function`) out of commits.
+- `.env` 被 gitignore 且机器相关;`.env.example` 记录全部变量,含
+  `MP_GOAL_MAX_ROUNDS`(goal 自动续轮上限,0–1000)。
+- glm 偶发 429 `upstream_rate_limited`("Endpoint is unavailable")——重跑
+  冒烟再诊断,别改断言。
+- 零运行时依赖是设计意图(本分支仅 `tsx`);不往管线里引重库。
+- 提交信息:`<type>: <中文或英文摘要>`,type ∈ feat/fix/sync。
+- 日志放 /tmp/opencode;`bundle:function` 的产物 `supabase/.temp` 别带进提交。
