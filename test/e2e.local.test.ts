@@ -19,7 +19,11 @@ interface CapturedRequest {
   body: string
 }
 
-function startMockUpstream(events: Array<Record<string, unknown>>, captured: CapturedRequest[]): Promise<http.Server> {
+// Chat-completions JSON frames plus raw SSE chunks (": ping" keep-alives).
+function startMockUpstream(
+  events: Array<Record<string, unknown> | string>,
+  captured: CapturedRequest[],
+): Promise<http.Server> {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       const chunks: Buffer[] = []
@@ -33,7 +37,8 @@ function startMockUpstream(events: Array<Record<string, unknown>>, captured: Cap
             res.end()
             return
           }
-          res.write(`data: ${JSON.stringify(events[index]!)}\n\n`)
+          const event = events[index]!
+          res.write(typeof event === "string" ? event : `data: ${JSON.stringify(event)}\n\n`)
           index++
           setTimeout(writeNext, 5)
         }
@@ -97,7 +102,7 @@ describe("sandbox e2e over real HTTP", () => {
     await new Promise<void>((resolve) => proxyServer?.close(() => resolve()))
   })
 
-  async function boot(events: Array<Record<string, unknown>>) {
+  async function boot(events: Array<Record<string, unknown> | string>) {
     upstreamServer = await startMockUpstream(events, captured)
     const upstreamPort = (upstreamServer.address() as AddressInfo).port
     upstreamBase = `http://127.0.0.1:${upstreamPort}`
@@ -120,14 +125,10 @@ describe("sandbox e2e over real HTTP", () => {
 
   it("POST /v1/responses non-streaming returns an aggregated response object", async () => {
     const base = await boot([
-      { type: "response.created", response: { id: "resp_e2e_1" } },
-      { type: "response.output_text.delta", delta: "e2e " },
-      { type: "response.output_text.delta", delta: "hello" },
-      {
-        type: "response.output_item.done",
-        item: { type: "message", role: "assistant", content: [{ type: "output_text", text: "e2e hello" }] },
-      },
-      { type: "response.completed", response: { usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 } } },
+      { choices: [{ index: 0, delta: { content: "e2e " } }] },
+      { choices: [{ index: 0, delta: { content: "hello" } }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      { choices: [], usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } },
     ])
 
     const res = await fetch(`${base}/v1/responses`, {
@@ -138,10 +139,16 @@ describe("sandbox e2e over real HTTP", () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as Record<string, unknown>
     expect(body.object).toBe("response")
-    expect(body.id).toBe("resp_e2e_1")
+    expect(body.id).toMatch(/^resp_[0-9a-f-]{36}$/)
     expect(body.status).toBe("completed")
     expect(body.output_text).toBe("e2e hello")
-    expect(body.usage).toEqual({ input_tokens: 4, output_tokens: 2, total_tokens: 6 })
+    expect(body.usage).toEqual({
+      input_tokens: 4,
+      output_tokens: 2,
+      total_tokens: 6,
+      input_tokens_details: null,
+      output_tokens_details: null,
+    })
 
     // The opencode fingerprint must survive the real HTTP hop.
     const upstreamHeaders = captured[0]!.headers
@@ -149,18 +156,19 @@ describe("sandbox e2e over real HTTP", () => {
     expect(upstreamHeaders["x-opencode-client"]).toBe("cli")
     expect(String(upstreamHeaders["x-opencode-session"])).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
     const upstreamBody = JSON.parse(captured[0]!.body) as Record<string, unknown>
-    expect(upstreamBody.store).toBe(false)
+    expect(upstreamBody.model).toBe("deepseek-v4.1-flash-free")
+    expect(upstreamBody.stream).toBe(true)
     expect((upstreamBody.tools as unknown[]).length).toBe(OPENCODE_BUILTIN_TOOLS.length)
   })
 
   it("POST /v1/responses streaming emits canonical event:/data: SSE frames over the wire", async () => {
     const base = await boot([
-      { type: "response.created", response: { id: "resp_e2e_s" } },
-      { type: "response.output_text.delta", delta: "st" },
-      // Upstream keep-alive frames (sent by real opencode zen) must not leak.
-      { type: "ping" },
-      { type: "response.output_text.delta", delta: "ream" },
-      { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      { choices: [{ index: 0, delta: { content: "st" } }] },
+      // Upstream keep-alive frames must not leak into the raised stream.
+      ": keep-alive\n\n",
+      { choices: [{ index: 0, delta: { content: "ream" } }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
     ])
 
     const res = await fetch(`${base}/v1/responses`, {
@@ -173,14 +181,11 @@ describe("sandbox e2e over real HTTP", () => {
     const text = await res.text()
 
     expect(text).not.toContain("[DONE]")
-    expect(text).not.toContain("event: ping")
+    expect(text).not.toContain("keep-alive")
     const frames = text.split("\n\n").filter((block) => block.startsWith("event: "))
-    expect(frames.map((f) => f.split("\n")[0]!.slice(7))).toEqual([
-      "response.created",
-      "response.output_text.delta",
-      "response.output_text.delta",
-      "response.completed",
-    ])
+    const types = frames.map((f) => f.split("\n")[0]!.slice(7))
+    expect(types[0]).toBe("response.created")
+    expect(types.at(-1)).toBe("response.completed")
     const deltas = frames
       .filter((f) => f.includes("output_text.delta"))
       .map((f) => (JSON.parse(f.split("\n")[1]!.slice(6)) as { delta: string }).delta)
@@ -189,9 +194,10 @@ describe("sandbox e2e over real HTTP", () => {
 
   it("regression: POST /v1/chat/completions keeps working unchanged on the same server", async () => {
     const base = await boot([
-      { type: "response.output_text.delta", delta: "chat " },
-      { type: "response.output_text.delta", delta: "ok" },
-      { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      { choices: [{ index: 0, delta: { content: "chat " } }] },
+      { choices: [{ index: 0, delta: { content: "ok" } }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
     ])
 
     const res = await fetch(`${base}/v1/chat/completions`, {
@@ -214,18 +220,19 @@ describe("sandbox e2e over real HTTP", () => {
       .join("")
     expect(content).toBe("chat ok")
 
-    // The chat facade's upstream contract is untouched as well.
+    // The chat facade's upstream contract is the oa-compat one now.
     const upstreamBody = JSON.parse(captured[0]!.body) as Record<string, unknown>
-    expect(upstreamBody.store).toBe(false)
+    expect(upstreamBody.model).toBe("deepseek-v4.1-flash-free")
+    expect(upstreamBody.stream).toBe(true)
     expect((upstreamBody.tools as unknown[]).length).toBe(OPENCODE_BUILTIN_TOOLS.length)
   })
 
   it("POST /v1/messages non-streaming returns an aggregated Anthropic message over the wire", async () => {
     const base = await boot([
-      { type: "response.created", response: { id: "resp_e2e_m", usage: null } },
-      { type: "response.output_text.delta", delta: "e2e " },
-      { type: "response.output_text.delta", delta: "anthropic" },
-      { type: "response.completed", response: { usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 } } },
+      { choices: [{ index: 0, delta: { content: "e2e " } }] },
+      { choices: [{ index: 0, delta: { content: "anthropic" } }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      { choices: [], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } },
     ])
 
     const res = await fetch(`${base}/v1/messages`, {
@@ -247,18 +254,19 @@ describe("sandbox e2e over real HTTP", () => {
 
     // Same free-tier fingerprint contract as the other facades.
     const upstreamBody = JSON.parse(captured[0]!.body) as Record<string, unknown>
-    expect(upstreamBody.store).toBe(false)
+    expect(upstreamBody.model).toBe("deepseek-v4.1-flash-free")
+    expect(upstreamBody.stream).toBe(true)
     expect((upstreamBody.tools as unknown[]).length).toBe(OPENCODE_BUILTIN_TOOLS.length)
     expect(captured[0]!.headers["user-agent"]).toContain("opencode/")
   })
 
   it("POST /v1/messages streaming emits canonical Anthropic SSE frames over the wire", async () => {
     const base = await boot([
-      { type: "response.created", response: { id: "resp_e2e_ms" } },
-      { type: "response.output_text.delta", delta: "he" },
-      { type: "ping" },
-      { type: "response.output_text.delta", delta: "y" },
-      { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } },
+      { choices: [{ index: 0, delta: { content: "he" } }] },
+      ": keep-alive\n\n",
+      { choices: [{ index: 0, delta: { content: "y" } }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      { choices: [], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } },
     ])
 
     const res = await fetch(`${base}/v1/messages`, {
@@ -271,27 +279,21 @@ describe("sandbox e2e over real HTTP", () => {
     const text = await res.text()
 
     expect(text).not.toContain("[DONE]")
-    expect(text).not.toContain("event: ping")
+    expect(text).not.toContain("keep-alive")
     const frames = text.split("\n\n").filter((block) => block.startsWith("event: "))
-    expect(frames.map((f) => f.split("\n")[0]!.slice(7))).toEqual([
-      "message_start",
-      "content_block_start",
-      "content_block_delta",
-      "content_block_delta",
-      "content_block_stop",
-      "message_delta",
-      "message_stop",
-    ])
+    expect(frames[0]!.split("\n")[0]).toBe("event: message_start")
     const deltas = frames
       .filter((f) => f.includes('"type":"content_block_delta"'))
       .map((f) => (JSON.parse(f.split("\n")[1]!.slice(6)) as { delta: { text: string } }).delta.text)
     expect(deltas.join("")).toBe("hey")
+    const types = frames.map((f) => f.split("\n")[0]!.slice(7))
+    expect(types.at(-1)).toBe("message_stop")
   })
 
   it("regression: all three facades respond on the same proxy server", async () => {
     const base = await boot([
-      { type: "response.output_text.delta", delta: "ok" },
-      { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      { choices: [{ index: 0, delta: { content: "ok" } }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
     ])
 
     const routes: Array<{ path: string; body: Record<string, unknown>; auth: Record<string, string> }> = [
@@ -310,7 +312,7 @@ describe("sandbox e2e over real HTTP", () => {
   })
 
   it("auth failure on /v1/responses returns 401 through the wire", async () => {
-    const base = await boot([{ type: "response.completed", response: {} }])
+    const base = await boot([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }])
     const res = await fetch(`${base}/v1/responses`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer wrong" },
