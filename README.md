@@ -572,7 +572,6 @@ bun run smoke:newmodels mimo-v2.6-flash-free                        # 回归:mim
 bun run smoke:newmodels space-bunny-free step-5-preview-free        # 回归:其余 oa-compat 模型全量
 bun run smoke:tools                                                 # 164/164:3 模型 × 3 门面工具回合
 bun run smoke:efforts                                               # 22/22:含 deepseek 全档位
-bun run mp-smoke                                                    # egress 本机运行时:三门面打真实上游
 ```
 
 ### 7.4 GitHub 上的三线同步(egress / supabase / main)
@@ -594,7 +593,7 @@ bun run mp-smoke                                                    # egress 本
 1. **读目录**:`opencode/glm-5.3-flash-free` —— family `glm-flash`、`release_date` 2026-08-26、`reasoning_options [{type:"effort",values:["low","high","max"]}]`、`interleaved.field: "reasoning_content"`、`attachment/tool_call/structured_output/temperature` 均 true、输入 `text/image/video/pdf`、`limit 200000/32000`、cost 全 0。
 2. **探路由**:`bun run scripts/probe-deepseek-routing.ts glm-5.3-flash-free` → oa-compat 200(`text="PONG"`,思考走 `reasoning_content`)/ responses 400 `ModelProtocolUnsupported`;`PROBE_EFFORTS=1` 下 `none..max` 七档全部 200(与 deepseek 同形),但目录只写 `low/high/max`,故代理只转发这三档。
 3. **写目录**:`supabase/functions/muse-proxy/_lib/types.ts` 新增 `MODEL_GLM` / `GLM_INFO`、`MODELS` 加一行、`resolveModel` 加 `glm*` 别名(大小写不敏感,含付费/旧免费 glm id);`models.ts` 的 `REASONING_MODELS` 加 id。
-4. **测试/脚本**:`test/chat-upstream.test.ts`(档位钳制 + 别名 + 目录顺序 + `reasoning_levels`)与 `test/router.test.ts`(目录顺序)同步;`scripts/smoke-newmodels.ts` 的 `MODELS`、`scripts/smoke-efforts.ts` 的档位矩阵与元数据断言、`scripts/mp-smoke.ts` 的一致性与三门面真上游检查均加 glm。
+4. **测试/脚本**:`test/chat-upstream.test.ts`(档位钳制 + 别名 + 目录顺序 + `reasoning_levels`)与 `test/router.test.ts`(目录顺序)同步;`scripts/smoke-newmodels.ts` 的 `MODELS`、`scripts/smoke-efforts.ts` 的档位矩阵与元数据断言均加 glm(本分支无 `scripts/mp-smoke.ts`,那是 egress 的本机运行时冒烟)。
 
 三个门面、上游转换层(`chat-upstream.ts` / `oa-compat.ts`)、指纹(UA/头/工具)一律不动:glm 与 deepseek 同属 oa-compat 路径,复用同一套降级/升格。
 
@@ -609,14 +608,12 @@ bun run smoke:newmodels glm-5.3-flash-free --steps=chat,chat-stream,responses,re
 bun run smoke:newmodels glm-5.3-flash-free --steps=messages,messages-stream,tools,memory
 bun run smoke:newmodels glm-5.3-flash-free --steps=large       # 各轮内附 muse 回归
 bun run smoke:efforts                                          # 含 glm 全档位
-bun run mp-smoke                                               # egress 本机运行时:三门面打真实上游
 ```
 
 实测记录(2026-10-16,真实上游):
 
 - `smoke:newmodels glm-5.3-flash-free` 九步全过(chat / chat-stream / responses / responses-stream / messages / messages-stream / tools / memory / large,每轮含 muse 回归)。免费层按 IP 限额,**连续快速调用会间歇 429**(`upstream_rate_limit`),所以按 `--steps=` 分片跑并在片间留出间隔;429 重跑即绿,不修改/放宽断言。
 - `smoke:efforts` 26 passed / 4 failed:四例 FAIL 全属 `step-5-preview-free`,上游直接 400 `Upstream request failed: Model is unavailable.`(两种格式都是,见 `scripts/probe-deepseek-routing.ts step-5-preview-free` 的裸探针)——即该限时预览模型在 zen 边缘已下线,与本次改动无关,断言保持原样以如实暴露上游状态。mimo / space-bunny / deepseek / glm / muse 的档位与元数据断言全绿(glm 七档 + `none`→`low` 全过)。
-- `mp:smoke`(本机 egress 运行时):glm / deepseek 三门面打真实上游均 200;`admin login` 与 `egress discovery` 两项 FAIL 属环境未配置(`MP_ADMIN_PASSWORD` 未设置、本沙箱无副出口 IP),不是代码缺陷。
 
 三线同步同 7.4:egress / supabase / main 的 `_lib/types.ts` + `models.ts` + 测试 + 脚本 + README 一起落地。
 
@@ -649,10 +646,8 @@ bun run mp-smoke                                               # egress 本机�
 bun run test                            # 217/217(goal/goal-wiring/alias-downlink/chat-truncate/chat-upstream 全部改写钉死新语义)
 bun run typecheck                       # tsc --noEmit 通过;deno check / deno bundle 同过
 bun run scripts/probe-muse-deprecation.ts   # 全部 7 模型 × 3 端点矩阵
-bun run mp-smoke                        # egress 本机 13/13:三门面真上游 + admin + egress + muse SSE
 ```
 
-- `mp-smoke` 逐项:deepseek/glm 三门面 200 聚合、admin login、egress 50 副出口、`sse stream`(muse id 流式 first_byte ~3.3s、子帧 + [DONE] 完整收尾)。glm 偶发 429 `upstream_rate_limited` 属免费层限额,重跑即绿。
 - muse id 三门面真实上游跑齐(chat/responses/messages),goal id 真实上游跑齐 judge/续轮全路径。
 - 三线同步同 7.4:egress / supabase / main 的 `_lib` 与测试一起落地(见 §7.4)。
 
