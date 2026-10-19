@@ -462,7 +462,7 @@ cd ~ && git clone --depth 1 https://github.com/anomalyco/opencode opencode   # d
 1. **读目录**:从 `https://models.opencode.ai/api.json` 的 `opencode.models` 取条目(id / name / limit / reasoning_options / interleaved / attachment / tool_call / cost)。
 2. **探路由**:跑 `bun run scripts/probe-deepseek-routing.ts[模型 id]`——同一份过闸门 body 分别打 `/inference/v1/chat/completions` 与 `/inference/v1/responses`,看哪个返回 200。deepseek 只活在前者(`ModelProtocolUnsupported` 只在后者出现);要逐档位看的话加 `PROBE_EFFORTS=1`。
 3. **写目录**:`api/_lib/types.ts` 新增 `MODEL_DEEPSEEK` / `DEEPSEEK_INFO`、`MODELS` 加一行、`resolveModel` 加别名(catalog 文档里只列 `low/high/max`,即使上游对其它档位也 200,代理也不猜——未文档化档位丢弃,`none` 钳制到目录最低档 `low`)。
-4. **开思考标记 + 测试**:`api/models.ts` 的 `REASONING_MODELS` 加 id(使 `/v1/models` 的 `reasoning:true` 成立),并同步 `test/chat-upstream.test.ts` / `test/router.test.ts` 的目录断言与 `test/pipeline.test.ts` / `test/router.test.ts` 的 UA 断言。
+4. **开思考标记 + 测试**:`api/models.ts` 的 `REASONING_MODELS` 加 id(使 `/v1/models` 的 `reasoning:true` 成立),并同步 `test/chat-upstream.test.ts` 的目录断言与 `test/pipeline.test.ts` 的 UA 断言(本分支无 `test/router.test.ts`)。
 
 三个门面无需任何改动:路由分发统一看 `resolveModel(...).upstream === "oa-compat"`(`chat.ts` / `responses.ts` / `messages.ts` 各一处),新增 oa-compat 模型自动获得 chat / responses / messages 三门面支持。
 
@@ -489,7 +489,7 @@ bun run smoke:efforts                                               # 22/22:含 
 | 分支 | 形态 | 本分支额外内容 | 同步方式 |
 |---|---|---|---|
 | `main` | Vercel 部署 | `api/*` 兼容外壳 + `api/_lib/*`(实现本体) | 把本轮的 `_lib/types.ts` / `models.ts` / UA 常量 / 测试 / README 改动 cherry-pick 或手工对齐到 `api/` 下的同名文件 |
-| `supabase` | Supabase Edge Function | `api/*` + `api/*` 外壳 | 与 egress 的 `supabase/` 树同源,直接对齐 |
+| `supabase` | Supabase Edge Function | `supabase/functions/muse-proxy/*` + `api/*` 外壳 | 与 egress 的 `supabase/` 树同源,直接对齐 |
 | `egress` | 本机常驻(Docker) | 额外 `server/`(出口 IP 轮询)+ `admin-web/` | 以本分支为准 |
 
 > 切分支后发现“模型消失了”,先对 `git diff origin/<分支>..<分支> -- '*types.ts'`,确认目录同步到位再怀疑上游。
@@ -500,8 +500,8 @@ bun run smoke:efforts                                               # 22/22:含 
 
 1. **读目录**:`opencode/glm-5.3-flash-free` —— family `glm-flash`、`release_date` 2026-08-26、`reasoning_options [{type:"effort",values:["low","high","max"]}]`、`interleaved.field: "reasoning_content"`、`attachment/tool_call/structured_output/temperature` 均 true、输入 `text/image/video/pdf`、`limit 200000/32000`、cost 全 0。
 2. **探路由**:`bun run scripts/probe-deepseek-routing.ts glm-5.3-flash-free` → oa-compat 200(`text="PONG"`,思考走 `reasoning_content`)/ responses 400 `ModelProtocolUnsupported`;`PROBE_EFFORTS=1` 下 `none..max` 七档全部 200(与 deepseek 同形),但目录只写 `low/high/max`,故代理只转发这三档。
-3. **写目录**:`api/_lib/types.ts` 新增 `MODEL_GLM` / `GLM_INFO`、`MODELS` 加一行、`resolveModel` 加 `glm*` 别名(大小写不敏感,含付费/旧免费 glm id);`models.ts` 的 `REASONING_MODELS` 加 id。
-
+3. **写目录**:`api/_lib/types.ts` 新增 `MODEL_GLM` / `GLM_INFO`、`MODELS` 加一行、`resolveModel` 加 `glm*` 别名(大小写不敏感,含付费/旧免费 glm id);`api/models.ts` 的 `REASONING_MODELS` 加 id。
+4. **测试/脚本**:`test/chat-upstream.test.ts`(档位钳制 + 别名 + 目录顺序 + `reasoning_levels`)与 `test/pipeline.test.ts`(UA 断言)同步;`scripts/smoke-newmodels.ts` 的 `MODELS`、`scripts/smoke-efforts.ts` 的档位矩阵与元数据断言均加 glm。本分支没有 `test/router.test.ts` / `scripts/mp-smoke.ts`(那是 egress/supabase 侧的门面与运行时测试)。
 
 三个门面、上游转换层(`chat-upstream.ts` / `oa-compat.ts`)、指纹(UA/头/工具)一律不动:glm 与 deepseek 同属 oa-compat 路径,复用同一套降级/升格。
 
