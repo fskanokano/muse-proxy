@@ -594,6 +594,7 @@ bun run smoke:newmodels # 114/114:3 模型 × 3 门面 + 工具回合 + 记忆 +
 | Claude Code 2.1.299 | `POST /v1/messages` | 20 个客户端工具(大写名不撞内置,零别名);`Bash` → `Read` → DONE |
 
 方法:本地起门面 handler(真上游、真 SSE),用真实 CLI 自己的配置指向它,断言副作用(文件内容)+ 门面日志里的工具调用名。
+另外用保留名 `shell` 直击三个门面,确认真上游 200、模型真的调用了 `mp_shell`,且下行只暴露 `shell`。
 
 验证:
 
