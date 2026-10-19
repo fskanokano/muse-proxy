@@ -165,13 +165,47 @@ describe("effort clamping per model", () => {
     expect(none.reasoning_effort).toBe("minimal")
   })
 
-  it("step-5: minimal..max forwarded verbatim, none clamped to minimal (reasoning mandatory)", () => {
-    for (const level of ["minimal", "low", "medium", "high", "xhigh", "max"]) {
+  it("step-5: upstream-retired id aliases deepseek, so its levels clamp like deepseek", () => {
+    for (const level of ["low", "high", "max"]) {
       const request = lowerChatUpstream({ model: MODELS["step-5-preview-free"]!, input: [], tools: [], effort: level })
       expect(request.reasoning_effort).toBe(level)
     }
+    for (const level of ["minimal", "medium", "xhigh"]) {
+      const request = lowerChatUpstream({ model: MODELS["step-5-preview-free"]!, input: [], tools: [], effort: level })
+      expect(request.reasoning_effort).toBeUndefined()
+    }
     const none = lowerChatUpstream({ model: MODELS["step-5-preview-free"]!, input: [], tools: [], effort: "none" })
-    expect(none.reasoning_effort).toBe("minimal")
+    expect(none.reasoning_effort).toBe("low")
+    expect(MODELS["step-5-preview-free"]!.upstreamId).toBe("deepseek-v4.1-flash-free")
+  })
+
+  it("big-pickle / longcat / nemotron lightning+ultra: reasoning always on, no levels sent", () => {
+    for (const id of ["big-pickle", "longcat-2.5-preview-free", "nemotron-3.5-lightning-free", "nemotron-3-ultra-free"]) {
+      for (const level of ["minimal", "low", "medium", "high", "xhigh", "max"]) {
+        const request = lowerChatUpstream({ model: MODELS[id]!, input: [], tools: [], effort: level })
+        expect(request.reasoning_effort).toBeUndefined()
+      }
+    }
+  })
+
+  it("beam: catalog levels low..max forwarded, none clamped to low, others dropped", () => {
+    for (const level of ["low", "medium", "high", "xhigh", "max"]) {
+      const request = lowerChatUpstream({ model: MODELS["beam-free"]!, input: [], tools: [], effort: level })
+      expect(request.reasoning_effort).toBe(level)
+    }
+    const minimal = lowerChatUpstream({ model: MODELS["beam-free"]!, input: [], tools: [], effort: "minimal" })
+    expect(minimal.reasoning_effort).toBeUndefined()
+    const none = lowerChatUpstream({ model: MODELS["beam-free"]!, input: [], tools: [], effort: "none" })
+    expect(none.reasoning_effort).toBe("low")
+  })
+
+  it("nemotron-3.5-super-vl: catalog documents none, so none is forwarded verbatim", () => {
+    for (const level of ["none", "minimal", "low", "medium", "high", "xhigh"]) {
+      const request = lowerChatUpstream({ model: MODELS["nemotron-3.5-super-vl-free"]!, input: [], tools: [], effort: level })
+      expect(request.reasoning_effort).toBe(level)
+    }
+    const max = lowerChatUpstream({ model: MODELS["nemotron-3.5-super-vl-free"]!, input: [], tools: [], effort: "max" })
+    expect(max.reasoning_effort).toBeUndefined()
   })
 
   it("deepseek: catalog levels low/high/max forwarded, none clamped to low, others dropped", () => {
@@ -228,6 +262,17 @@ describe("resolveModel routing", () => {
     expect(resolveModel("glm-5.3-flash").id).toBe("glm-5.3-flash-free")
     expect(resolveModel("GLM-5").id).toBe("glm-5.3-flash-free")
     expect(resolveModel("glm-4.7-flash").id).toBe("glm-5.3-flash-free")
+    expect(resolveModel("big-pickle").id).toBe("big-pickle")
+    expect(resolveModel("BigPickle").id).toBe("big-pickle")
+    expect(resolveModel("opencode/big-pickle").id).toBe("big-pickle")
+    expect(resolveModel("longcat-2.5-preview-free").id).toBe("longcat-2.5-preview-free")
+    expect(resolveModel("LongCat-2.5-Preview").id).toBe("longcat-2.5-preview-free")
+    expect(resolveModel("beam-free").id).toBe("beam-free")
+    expect(resolveModel("reflection/beam-1.0-501b-a23b").id).toBe("beam-free")
+    expect(resolveModel("nemotron-3.5-lightning-free").id).toBe("nemotron-3.5-lightning-free")
+    expect(resolveModel("nemotron-3-ultra-free").id).toBe("nemotron-3-ultra-free")
+    expect(resolveModel("nemotron-3.5-super-vl-free").id).toBe("nemotron-3.5-super-vl-free")
+    expect(resolveModel("nemotron-3-super-free").id).toBe("nemotron-3.5-lightning-free")
     expect(resolveModel("muse").id).toBe("muse-spark-1.3-contributor-free")
     expect(resolveModel("gpt-5.5").id).toBe("muse-spark-1.3-contributor-free")
     expect(resolveModel(undefined).id).toBe("muse-spark-1.3-contributor-free")
@@ -239,17 +284,29 @@ describe("/v1/models catalog", () => {
   const created = 1_758_000_000
   const list = modelsList(created)
 
-  it("lists all free models with reasoning metadata", () => {
+  it("lists only live models, keeping the retired ids out of the catalog", () => {
     const ids = list.data.map((m: { id: string }) => m.id)
     expect(ids).toEqual([
-      "muse-spark-1.3-contributor-free",
       "mimo-v2.6-flash-free",
       "space-bunny-free",
-      "step-5-preview-free",
       "deepseek-v4.1-flash-free",
       "glm-5.3-flash-free",
+      "big-pickle",
+      "longcat-2.5-preview-free",
+      "beam-free",
+      "nemotron-3.5-lightning-free",
+      "nemotron-3-ultra-free",
+      "nemotron-3.5-super-vl-free",
       "muse-spark-1.3-contributor-goal",
     ])
+    // Retired upstream (410/400): delisted from /v1/models but still resolvable,
+    // so historical client ids keep working through the deepseek alias.
+    const delisted = ["muse-spark-1.3-contributor-free", "step-5-preview-free"]
+    for (const id of delisted) {
+      expect(ids).not.toContain(id)
+      expect(MODELS[id]!.listed).toBe(false)
+      expect(resolveModel(id).upstreamId).toBe("deepseek-v4.1-flash-free")
+    }
     for (const entry of list.data) {
       expect(entry.object).toBe("model")
       expect(Array.isArray(entry.reasoning_levels)).toBe(true)
@@ -264,13 +321,22 @@ describe("/v1/models catalog", () => {
     expect(byId.get("mimo-v2.6-flash-free")!.reasoning_levels).toEqual([])
     expect(byId.get("mimo-v2.6-flash-free")!.reasoning).toBe(true)
     expect(byId.get("space-bunny-free")!.reasoning_levels).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"])
-    expect(byId.get("muse-spark-1.3-contributor-free")!.reasoning_levels).toEqual(["low", "high", "max"])
-    expect(byId.get("step-5-preview-free")!.reasoning_levels).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"])
-    expect(byId.get("step-5-preview-free")!.reasoning).toBe(true)
     expect(byId.get("deepseek-v4.1-flash-free")!.reasoning_levels).toEqual(["low", "high", "max"])
     expect(byId.get("deepseek-v4.1-flash-free")!.reasoning).toBe(true)
     expect(byId.get("glm-5.3-flash-free")!.reasoning_levels).toEqual(["low", "high", "max"])
     expect(byId.get("glm-5.3-flash-free")!.reasoning).toBe(true)
+    expect(byId.get("big-pickle")!.reasoning_levels).toEqual([])
+    expect(byId.get("big-pickle")!.reasoning).toBe(true)
+    expect(byId.get("longcat-2.5-preview-free")!.reasoning_levels).toEqual([])
+    expect(byId.get("longcat-2.5-preview-free")!.reasoning).toBe(true)
+    expect(byId.get("beam-free")!.reasoning_levels).toEqual(["low", "medium", "high", "xhigh", "max"])
+    expect(byId.get("beam-free")!.reasoning).toBe(true)
+    expect(byId.get("nemotron-3.5-lightning-free")!.reasoning_levels).toEqual([])
+    expect(byId.get("nemotron-3.5-lightning-free")!.reasoning).toBe(true)
+    expect(byId.get("nemotron-3-ultra-free")!.reasoning_levels).toEqual([])
+    expect(byId.get("nemotron-3-ultra-free")!.reasoning).toBe(true)
+    expect(byId.get("nemotron-3.5-super-vl-free")!.reasoning_levels).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+    expect(byId.get("nemotron-3.5-super-vl-free")!.reasoning).toBe(true)
     expect(byId.get("muse-spark-1.3-contributor-goal")!.reasoning_levels).toEqual(["low", "high", "max"])
     expect(byId.get("muse-spark-1.3-contributor-goal")!.reasoning).toBe(true)
   })

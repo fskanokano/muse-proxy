@@ -1,6 +1,8 @@
-// Real end-to-end smoke for the new free models (mimo-v2.6-flash-free,
+// Real end-to-end smoke for the free-model catalog (mimo-v2.6-flash-free,
 // space-bunny-free, step-5-preview-free, deepseek-v4.1-flash-free,
-// glm-5.3-flash-free) across all
+// glm-5.3-flash-free, plus the 2026-10-19 re-audit additions: big-pickle,
+// longcat-2.5-preview-free, beam-free, nemotron-3.5-lightning-free,
+// nemotron-3-ultra-free, nemotron-3.5-super-vl-free) across all
 // three facades against the REAL opencode zen upstream (network required).
 // Usage: bun run smoke:newmodels [model ...] [--steps=chat,chat-stream,...]
 //   - no model arg  -> every model below
@@ -14,7 +16,7 @@
 // completions). This script boots the same local server used by smoke:messages
 // (all three facades on one port) and proves, over real HTTP with the real
 // free-tier fingerprint:
-//   per model (mimo + space-bunny + step-5 + deepseek + glm):
+//   per model (every id in MODELS below):
 //     1. chat completions non-streaming (aggregated chat.completion + usage)
 //     2. chat completions streaming (SSE chunks, [DONE], model id echoed)
 //     3. responses non-streaming (aggregated response object + output_text)
@@ -26,7 +28,7 @@
 //     8. multi-turn memory (information survives a second request)
 //     9. large streaming generation (long output, many deltas, usage sane)
 //   then regression:
-//    10. muse-spark-1.3 unchanged on all three facades (responses upstream)
+//    10. muse-spark-1.3 unchanged on all three facades (deepseek alias)
 
 import * as http from "node:http"
 import { handleChatRequest } from "../api/chat"
@@ -42,6 +44,13 @@ const MODELS = [
   "step-5-preview-free",
   "deepseek-v4.1-flash-free",
   "glm-5.3-flash-free",
+  // 2026-10-19 free-tier re-audit additions (scripts/probe-free-sweep.ts).
+  "big-pickle",
+  "longcat-2.5-preview-free",
+  "beam-free",
+  "nemotron-3.5-lightning-free",
+  "nemotron-3-ultra-free",
+  "nemotron-3.5-super-vl-free",
 ]
 
 let passed = 0

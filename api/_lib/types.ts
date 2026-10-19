@@ -97,6 +97,17 @@ export const MODEL_SPACE_BUNNY = "space-bunny-free"
 export const MODEL_STEP5 = "step-5-preview-free"
 export const MODEL_DEEPSEEK = "deepseek-v4.1-flash-free"
 export const MODEL_GLM = "glm-5.3-flash-free"
+// 2026-10-19 free-tier re-audit (scripts/probe-free-sweep.ts): the live free
+// set gained six entries since the glm rollout — five `-free` ids plus
+// `big-pickle`, the only live free entry WITHOUT the suffix (catalog cost
+// 0/0/0). Every one answers on the oa-compat chat mount, so they ride the
+// shared converter unchanged (see the per-entry comments below).
+export const MODEL_BIG_PICKLE = "big-pickle"
+export const MODEL_LONGCAT = "longcat-2.5-preview-free"
+export const MODEL_BEAM = "beam-free"
+export const MODEL_NEMOTRON_LIGHTNING = "nemotron-3.5-lightning-free"
+export const MODEL_NEMOTRON_ULTRA = "nemotron-3-ultra-free"
+export const MODEL_NEMOTRON_SUPER_VL = "nemotron-3.5-super-vl-free"
 /** 实验模型: API id 保留, 上游随 muse 弃用重落到 deepseek (upstreamId+isGoal)。 */
 export const MODEL_GOAL = "muse-spark-1.3-contributor-goal"
 
@@ -119,6 +130,11 @@ export interface ModelInfo {
   isGoal?: boolean
   /** 发往上游的模型 id (缺省用 id 自身; muse/goal 等弃用别名填存活模型 id)。 */
   upstreamId?: string
+  /**
+   * /v1/models 是否上架 (缺省 true)。上游退役的 id 留在 MODELS 供历史客户端
+   * 解析 (upstreamId 别名到存活模型), 但不上架——只改目录露出, 代码不删。
+   */
+  listed?: boolean
 }
 
 // Effort levels come from the models.opencode.ai catalog (reasoning_options)
@@ -160,6 +176,9 @@ const MUSE_INFO: ModelInfo = {
   efforts: ["low", "high", "max"],
   isMuse: true,
   upstreamId: MODEL_DEEPSEEK,
+  // 上游 410 ModelDeprecated (1.3 自 2026-10-17, 1.2 于 2026-10-19 复核同)
+  // ——保留 id 解析, 不再上架。
+  listed: false,
 }
 const MIMO_INFO: ModelInfo = {
   id: MODEL_MIMO,
@@ -181,20 +200,44 @@ const SPACE_BUNNY_INFO: ModelInfo = {
   maxOutputTokens: 32_000,
   efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
 }
-// models.dev catalog (opencode/step-5-preview-free, 2026-10-10): context
-// 1,000,000 / output 65,536, reasoning + attachment + tool_call all true.
-// The shipped CLI clamps output to OUTPUT_TOKEN_MAX (32_000, see
-// packages/opencode/src/provider/transform.ts in the upstream repo), so the
-// proxy advertises the same effective cap as the other catalog entries.
+// 2026-10-19: step-5 stayed retired upstream — both chat mounts answer 400
+// `Upstream request failed: Model is unavailable.` (re-probed by
+// scripts/probe-free-sweep.ts, matching 2026-10-17). Same treatment as the
+// retired muse ids: the id stays in the catalog so historical clients keep
+// resolving, but the wire traffic aliases onto a live oa-compat model
+// (deepseek) via `upstreamId`, and efforts/metadata mirror the model actually
+// served. Delisted from /v1/models so the catalog never advertises a dead
+// entry.
 const STEP5_INFO: ModelInfo = {
   id: MODEL_STEP5,
-  name: "Step 5 Preview Free",
+  name: "Step 5 Preview Free (retired upstream, served by DeepSeek V4.1 Flash Free)",
+  upstream: "oa-compat",
+  upstreamId: MODEL_DEEPSEEK,
+  description:
+    "Step 5 preview reasoning model (free tier, limited time) was retired upstream on 2026-10-17 (400 Model is unavailable). Requests resolve to the live DeepSeek V4.1 Flash Free (free tier).",
+  contextWindow: 200_000,
+  maxOutputTokens: 32_000,
+  efforts: ["low", "high", "max"],
+  listed: false,
+}
+// models.opencode.ai catalog (opencode/big-pickle, read 2026-10-19): the only
+// live free entry without a `-free` suffix (cost 0/0/0 in the catalog). family
+// "big-pickle", release 2025-10-17, reasoning true with an EMPTY
+// reasoning_options list (always on, no levels to send — same shape as mimo),
+// interleaved `reasoning_content`, tool_call + structured_output + temperature
+// true, text-only input, limit context 200,000 / input 160,000 / output
+// 32,000 (the only entry whose catalog output already equals the proxy-wide
+// OUTPUT_TOKEN_MAX cap). catalog provider.api -> /inference/openai/v1, i.e.
+// the oa-compat chat mount.
+const BIG_PICKLE_INFO: ModelInfo = {
+  id: MODEL_BIG_PICKLE,
+  name: "Big Pickle",
   upstream: "oa-compat",
   description:
-    "Step 5 preview reasoning model (free tier, limited time) served via opencode zen with tool calling and multimodal input. Reasoning is mandatory; effort levels minimal–max, with none clamped to minimal.",
-  contextWindow: 1_000_000,
+    "Reasoning model for deliberate analysis, multi-step problem solving, and tool use (free tier). Reasoning is always on; effort control is not supported.",
+  contextWindow: 200_000,
   maxOutputTokens: 32_000,
-  efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+  efforts: [],
 }
 // models.opencode.ai catalog (opencode/deepseek-v4.1-flash-free, read
 // 2026-10-16): family "deepseek-flash", release 2026-09-10, attachment +
@@ -244,6 +287,90 @@ const GLM_INFO: ModelInfo = {
   maxOutputTokens: 32_000,
   efforts: ["low", "high", "max"],
 }
+// models.opencode.ai catalog (opencode/longcat-2.5-preview-free, read
+// 2026-10-19): family "longcat", release 2026-09-25, attachment + tool_call +
+// temperature true, reasoning_options [{type:"toggle"}] (reasoning always on,
+// no effort levels to send), interleaved `reasoning_content`, limit context
+// 1,000,000 / output 131,072 (advertised output follows the proxy-wide
+// OUTPUT_TOKEN_MAX cap of 32,000 like every other entry). catalog provider.api
+// -> /inference/openai/v1 (oa-compat chat mount).
+const LONGCAT_INFO: ModelInfo = {
+  id: MODEL_LONGCAT,
+  name: "LongCat 2.5 Preview Free",
+  upstream: "oa-compat",
+  description:
+    "Meituan's multimodal reasoning model for coding and agent tasks, with image understanding and a 1M-token context window (free tier). Reasoning is always on; effort control is not supported.",
+  contextWindow: 1_000_000,
+  maxOutputTokens: 32_000,
+  efforts: [],
+}
+// models.opencode.ai catalog (opencode/beam-free, read 2026-10-19): family
+// "beam", release 2026-10-05, tool_call + structured_output + temperature true
+// (text-only input), reasoning_options [{type:"effort", values:["low",
+// "medium","high","xhigh","max"]}], interleaved `reasoning_content`, limit
+// context 1,048,576 / output 131,072 (advertised capped to 32,000). catalog
+// provider.api -> /inference/openai/v1 (oa-compat chat mount).
+const BEAM_INFO: ModelInfo = {
+  id: MODEL_BEAM,
+  name: "Beam Free",
+  upstream: "oa-compat",
+  description:
+    "Sparse mixture-of-experts reasoning model with 23B active parameters for coding and agentic workflows (free tier). Thinking streams as reasoning_content; effort levels low–max.",
+  contextWindow: 1_048_576,
+  maxOutputTokens: 32_000,
+  efforts: ["low", "medium", "high", "xhigh", "max"],
+}
+// models.opencode.ai catalog (opencode/nemotron-3.5-lightning-free, read
+// 2026-10-19): family "nemotron-free", release 2026-08-11, tool_call +
+// structured_output + temperature true (text-only), reasoning true with an
+// EMPTY reasoning_options list (always on, no levels to send; same shape as
+// mimo), interleaved `reasoning_content`, limit context 262,144 / output
+// 262,144 (advertised capped to 32,000). catalog provider.api ->
+// /inference/openai/v1 (oa-compat chat mount).
+const NEMOTRON_LIGHTNING_INFO: ModelInfo = {
+  id: MODEL_NEMOTRON_LIGHTNING,
+  name: "Nemotron 3.5 Lightning Free",
+  upstream: "oa-compat",
+  description:
+    "Fast NVIDIA Nemotron MoE for reliable agentic tasks across enterprise workloads (free tier). Reasoning is always on; effort control is not supported.",
+  contextWindow: 262_144,
+  maxOutputTokens: 32_000,
+  efforts: [],
+}
+// models.opencode.ai catalog (opencode/nemotron-3-ultra-free, read 2026-10-19):
+// family "nemotron-free", release 2026-06-04, tool_call + temperature true
+// (no structured_output, text-only), reasoning true with an EMPTY
+// reasoning_options list, interleaved `reasoning_content`, limit context
+// 1,000,000 / output 128,000 (advertised capped to 32,000). catalog
+// provider.api -> /inference/openai/v1 (oa-compat chat mount).
+const NEMOTRON_ULTRA_INFO: ModelInfo = {
+  id: MODEL_NEMOTRON_ULTRA,
+  name: "Nemotron 3 Ultra Free",
+  upstream: "oa-compat",
+  description:
+    "Largest Nemotron 3 model for maximum open-weight reasoning and agent accuracy (free tier). Reasoning is always on; effort control is not supported.",
+  contextWindow: 1_000_000,
+  maxOutputTokens: 32_000,
+  efforts: [],
+}
+// models.opencode.ai catalog (opencode/nemotron-3.5-super-vl-free, read
+// 2026-10-19): family "nemotron-free", release 2026-10-15, attachment +
+// tool_call + temperature true (text + image in), reasoning_options
+// [{type:"effort", values:["none","minimal","low","medium","high","xhigh"]}]
+// — the only free entry whose documented levels INCLUDE `none`, so `none` is
+// forwarded verbatim instead of being clamped; interleaved `reasoning_content`,
+// limit context 1,048,576 / output 131,072 (advertised capped to 32,000).
+// catalog provider.api -> /inference/openai/v1 (oa-compat chat mount).
+const NEMOTRON_SUPER_VL_INFO: ModelInfo = {
+  id: MODEL_NEMOTRON_SUPER_VL,
+  name: "Nemotron 3.5 Super VL Free",
+  upstream: "oa-compat",
+  description:
+    "NVIDIA vision-language reasoning model for text, image, and video understanding and agentic tool use (free tier). Thinking streams as reasoning_content; effort levels none–xhigh.",
+  contextWindow: 1_048_576,
+  maxOutputTokens: 32_000,
+  efforts: ["none", "minimal", "low", "medium", "high", "xhigh"],
+}
 // 实验模型: 随 muse 弃用一并重落到 deepseek-v4.1-flash-free (upstreamId,
 // oa-compat chat 上游), 门面继续为其启用 goal 自动续轮: 无工具干净收尾时先过
 // judge (裁判即本模型自身经由 chat/completions, 见 _lib/goal.ts —— 门禁要求
@@ -269,6 +396,12 @@ export const MODELS: Record<string, ModelInfo> = {
   [MODEL_STEP5]: STEP5_INFO,
   [MODEL_DEEPSEEK]: DEEPSEEK_INFO,
   [MODEL_GLM]: GLM_INFO,
+  [MODEL_BIG_PICKLE]: BIG_PICKLE_INFO,
+  [MODEL_LONGCAT]: LONGCAT_INFO,
+  [MODEL_BEAM]: BEAM_INFO,
+  [MODEL_NEMOTRON_LIGHTNING]: NEMOTRON_LIGHTNING_INFO,
+  [MODEL_NEMOTRON_ULTRA]: NEMOTRON_ULTRA_INFO,
+  [MODEL_NEMOTRON_SUPER_VL]: NEMOTRON_SUPER_VL_INFO,
   [MODEL_GOAL]: GOAL_INFO,
 }
 
@@ -277,13 +410,14 @@ export const DEFAULT_MODEL_ID = MODEL_MUSE
 /**
  * Clamp a facade-mapped effort to the levels a model actually accepts.
  *
- * Returns undefined when the model has no effort control (mimo: reasoning is
- * always on, the field is dropped) or the requested value is undefined.
- * space-bunny and step-5 reject "none" upstream (400), so it clamps to their
- * lowest accepted level instead of being forwarded. muse/goal alias the deepseek
- * entry (deepseek efforts low/high/max), so undocumented levels are dropped,
- * "none" clamps to low, and the historical muse none..xhigh whitelist died with
- * the muse deprecation (2026-10-17).
+ * Returns undefined when the model has no effort control (mimo / longcat /
+ * nemotron lightning+ultra / big-pickle: reasoning is always on, the field is
+ * dropped) or the requested value is undefined. space-bunny rejects "none"
+ * upstream (400), so it clamps to its lowest accepted level instead of being
+ * forwarded. muse / step-5 / goal alias the deepseek entry (deepseek efforts
+ * low/high/max), so undocumented levels are dropped and "none" clamps to low;
+ * nemotron-3.5-super-vl is the one free entry whose catalog levels document
+ * "none", so it is forwarded verbatim (2026-10-19 audit).
  */
 export function clampEffortForModel(model: ModelInfo, effort: string | undefined): string | undefined {
   if (effort === undefined || model.efforts.length === 0) return undefined
@@ -310,6 +444,17 @@ export function resolveModel(requested: unknown): ModelInfo {
   if (normalized.startsWith("mimo")) return MIMO_INFO
   if (normalized.startsWith("deepseek")) return DEEPSEEK_INFO
   if (normalized.startsWith("glm")) return GLM_INFO
+  if (normalized.startsWith("longcat")) return LONGCAT_INFO
+  if (normalized.includes("big-pickle") || normalized.includes("bigpickle")) return BIG_PICKLE_INFO
+  if (normalized.includes("beam")) return BEAM_INFO
+  // nemotron family: the three live variants are distinct models, so the
+  // qualifier decides (legacy/paid ids without one fall back to the fast
+  // Lightning variant, the shape the catalog serves today).
+  if (normalized.includes("nemotron")) {
+    if (normalized.includes("ultra")) return NEMOTRON_ULTRA_INFO
+    if (normalized.includes("super-vl")) return NEMOTRON_SUPER_VL_INFO
+    return NEMOTRON_LIGHTNING_INFO
+  }
   if (normalized.includes("space-bunny")) return SPACE_BUNNY_INFO
   if (normalized.includes("step-5") || normalized.includes("step5")) return STEP5_INFO
   if (normalized.includes("muse")) return MUSE_INFO

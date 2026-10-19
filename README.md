@@ -10,42 +10,52 @@
   - `anotherspark` 已无免费模型;`/v1/responses` 上游对全部免费模型回报 `ModelProtocolUnsupported`(2026-10-17 探针),Responses 直发路径整体退役
   - `mimo-v2.6-flash-free` → `POST https://opencode.ai/inference/openai/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游直接 500)
   - `space-bunny-free` → `POST https://opencode.ai/inference/openai/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游 401 `ModelError: not supported for format openai`)
-  - `step-5-preview-free` → oa-compat 同上(**2026-10-17 实测上游已下线**:`Upstream request failed: Model is unavailable.`,目录保留以如实暴露状态)
+  - `step-5-preview-free` → oa-compat 同上(**2026-10-17 实测上游已下线**;2026-10-19 起与 muse 同处理:`upstreamId` 别名到 `deepseek-v4.1-flash-free`,id 保留供历史客户端解析,不再上架 `/v1/models`)
   - `deepseek-v4.1-flash-free` → `POST https://opencode.ai/inference/openai/v1/chat/completions`(oa-compat;走 `/v1/responses` 上游 400 `ModelProtocolUnsupported: Model does not support this protocol`,2026-10-16/17 探针)
   - `glm-5.3-flash-free` → `POST https://opencode.ai/inference/openai/v1/chat/completions`(oa-compat;2026-10-16 探针 `/v1/responses` 400 `ModelProtocolUnsupported`,同 deepseek)
+  - `big-pickle` / `longcat-2.5-preview-free` / `beam-free` / `nemotron-3.5-lightning-free` / `nemotron-3-ultra-free` / `nemotron-3.5-super-vl-free` → 2026-10-19 接入的六个存活免费档,全部 oa-compat 同上(chat/completions;`/v1/responses` 一律 400 `ModelProtocolUnsupported`),详见「模型目录」
   - `muse-spark-1.3-contributor-goal` → 与 muse 相同:**别名到 deepseek,走 oa-compat**(goal 的 judge/续轮也共用同一 oa-compat mount + 指纹;门禁要求 `stream:true`,judge 改为流式聚合)
 - **鉴权**:`Authorization: Bearer $PROXY_API_KEY` 或 `x-api-key: $PROXY_API_KEY`(三个端点共用同一鉴权逻辑)。**未设置 `PROXY_API_KEY` 环境变量时,所有端点一律返回 401(fail-closed),不存在开放模式**
 - **免费模型**:上游 API key 固定为字面量 `public`,匿名免费层按 IP 限额,无需注册
-- **模型路由**(`api/_lib/types.ts` 的 `resolveModel`):显式匹配 `mimo*`/`deepseek*`/`glm*`/`space-bunny*`/`step-5*`/`muse*` 前缀与完整 id;`muse*`/goal 与其余任意未知 id 一律别名到 `deepseek-v4.1-flash-free`(2026-10-17 起,muse 上游弃用,永不报 404);三个端点对同一 model id 语义一致
+- **模型路由**(`api/_lib/types.ts` 的 `resolveModel`):显式匹配 `mimo*`/`deepseek*`/`glm*`/`longcat*`/`beam*`/`nemotron*`/`space-bunny*`/`step-5*`/`muse*` 前缀与完整 id(`nemotron` 再按 `ultra`/`super-vl` 限定符分流,余者落 Lightning;`big-pickle` 亦直连);`muse*`/`step-5*`/goal 与其余任意未知 id 一律别名到 `deepseek-v4.1-flash-free`(2026-10-17/19 起 muse 弃用、step-5 退休,永不报 404);三个端点对同一 model id 语义一致
 - **思考强度**:逐档位实测上游接受度(2026-09-24 起,`scripts/probe-reasoning-efforts.ts`),`/v1/models` 每个模型暴露 `reasoning` + `reasoning_levels`:
   - `muse-spark-1.3-contributor-free`:**已别名到 deepseek**,档位继承 deepseek 规则 `low/high/max`(`none` 钳制为 `low`);原 muse 档位(`none/minimal/low/medium/high/xhigh`,`max` 上游 400)随弃用作废;Anthropic 门面 `thinking.budget_tokens` 档位映射不变
   - `mimo-v2.6-flash-free`:reasoning **恒开**,`reasoning_effort` 上游容忍但无效,故不暴露档位、不下发该字段
   - `space-bunny-free`:`minimal/low/medium/high/xhigh/max`(目录外还多接受 `minimal`);请求 `none` 会被钳制为 `minimal`(直接转发上游 400);Anthropic 门面 `thinking:{type:"disabled"}` 同样钳制为 `minimal`
-  - `step-5-preview-free`:`minimal/low/medium/high/xhigh/max`(与 space-bunny 同规则;上游 `none` 400 "Reasoning is mandatory for this endpoint and cannot be disabled")
+  - `step-5-preview-free`:`low/high/max`(2026-10-17 上游下线后随 `upstreamId` 别名继承 deepseek 档位;原 `minimal..max` 白名单作废)
   - `deepseek-v4.1-flash-free`:`low/high/max`(上游目录 `reasoning_options` 原样;实测任意档位上游都 200,但未文档化的档位代理**丢弃**而非猜测转发,`none` 钳制为 `low`)
   - `glm-5.3-flash-free`:`low/high/max`(同 deepseek 规则:目录档位原样转发,未文档化档位丢弃,`none` 钳制为 `low`)
+  - `big-pickle` / `longcat-2.5-preview-free` / `nemotron-3.5-lightning-free` / `nemotron-3-ultra-free`:reasoning 恒开但目录只给 `toggle`/空档位 → 不暴露档位、不下发该字段(同 mimo)
+  - `beam-free`:`low/medium/high/xhigh/max`(目录档位原样;`none` 钳制为 `low`,未文档化档位丢弃)
+  - `nemotron-3.5-super-vl-free`:`none/minimal/low/medium/high/xhigh`(唯一把 `none` 写进目录的免费条目,`none` 原样转发不钳制)
   - 钳制逻辑集中在 `clampEffortForModel`(`api/_lib/types.ts`),三个门面共用
 
 ```
-client ──chat/completions──▶ muse-proxy ──alias(muse*/goal/未知 → deepseek)──┐
-        ◀──SSE chunks────               └─oa-compat────▶ opencode zen /inference/openai/v1/chat/completions (mimo / space-bunny / deepseek / glm)
+client ──chat/completions──▶ muse-proxy ──alias(muse*/step-5*/goal/未知 → deepseek)──┐
+        ◀──SSE chunks────               └─oa-compat────▶ opencode zen /inference/openai/v1/chat/completions (mimo / space-bunny / deepseek / glm / big-pickle / longcat / beam / nemotron ×3)
                                                           └─raise─▶ 同一套 raise 层(gate:stream=true,goal judge 流式聚合)
 ```
 
-新增的 oa-compat 模型(`api/_lib/chat-upstream.ts` + `api/_lib/oa-compat.ts`):降级(Responses input → chat messages,含 function_call 轮次回放：连续并行调用合并成一条 `assistant(content=null, tool_calls=[...])`，拆散上游直接 400)与升格(chat-completions SSE → 规范 Responses 事件生命周期:`response.created` → `output_item.added` → 文本/思考 delta → `output_text.done`/`output_item.done` → `response.completed`),三个门面共享同一转换层,语义(工具暴露、心跳、终止事件守护)全部一致。2026-10-17 起 **muse 也走这条路径**(别名到 deepseek),`lower.ts` 直发 `/inference/v1/responses` 的分支退役;对 OpenMinis Responses 解析器补齐的 function-call 事件顺序(`output_item.added` → `function_call_arguments.delta` → `function_call_arguments.done` → `output_item.done`)保留。`/v1/models` 目录仍是七个模型(含 goal 实验模型)。
+新增的 oa-compat 模型(`api/_lib/chat-upstream.ts` + `api/_lib/oa-compat.ts`):降级(Responses input → chat messages,含 function_call 轮次回放：连续并行调用合并成一条 `assistant(content=null, tool_calls=[...])`，拆散上游直接 400)与升格(chat-completions SSE → 规范 Responses 事件生命周期:`response.created` → `output_item.added` → 文本/思考 delta → `output_text.done`/`output_item.done` → `response.completed`),三个门面共享同一转换层,语义(工具暴露、心跳、终止事件守护)全部一致。2026-10-17 起 **muse 也走这条路径**(别名到 deepseek),`lower.ts` 直发 `/inference/v1/responses` 的分支退役;对 OpenMinis Responses 解析器补齐的 function-call 事件顺序(`output_item.added` → `function_call_arguments.delta` → `function_call_arguments.done` → `output_item.done`)保留。`/v1/models` 目录共 11 条(10 个存活免费档 + 1 个 goal 实验模型;muse / step-5 两个退役 id 已下架但保留解析)。
 
 ## 模型目录
 
-代理当前服务 **7 个 opencode zen 免费模型**(6 个免费档 + 1 个 goal 实验模型)。`GET /v1/models`(`api/models.ts`)按 OpenAI models-list 格式返回下表全部模型,每个条目携带 `reasoning`(是否思考)与 `reasoning_levels`(支持的思考强度档位,空数组 = 无档位控制)元数据,另有 `context_window` / `max_output_tokens` / `owned_by: "opencode-zen"`。所有模型共享免费匿名层:上游 API key 固定为字面量 `public`,按 IP 限额,无需注册;三个 API 门面(chat / responses / messages)对同一 model id 语义一致。
+代理当前上架 **11 个模型**(2026-10-19 复核后的 10 个存活免费档 + 1 个 goal 实验模型;muse / step-5 两个上游退役 id 保留解析但已下架)。`GET /v1/models`(`api/models.ts`)按 OpenAI models-list 格式返回下表全部**上架**模型,每个条目携带 `reasoning`(是否思考)与 `reasoning_levels`(支持的思考强度档位,空数组 = 无档位控制)元数据,另有 `context_window` / `max_output_tokens` / `owned_by: "opencode-zen"`。所有模型共享免费匿名层:上游 API key 固定为字面量 `public`,按 IP 限额,无需注册;三个 API 门面(chat / responses / messages)对同一 model id 语义一致。
 
 | 模型 ID | 名称 | 上游格式(出站路由) | 上下文窗口 | 最大输出 | 思考 | 思考强度档位 |
 |---|---|---|---|---|---|---|
 | `muse-spark-1.3-contributor-free` | Muse Spark 1.3 Contributor Free(已别名到 deepseek) | **oa-compat** → deepseek(2026-10-17 起,muse 上游弃用) | 200,000 | 32,000 | ✅ | `low / high / max`(`none` 钳制为 `low`;原 muse 档位作废) |
 | `mimo-v2.6-flash-free` | MiMo-V2.6-Flash Free | `oa-compat` → `POST https://opencode.ai/inference/openai/v1/chat/completions` | 200,000 | 32,000 | ✅ 恒开 | 无(上游容忍 `reasoning_effort` 但无效,代理不下发该字段) |
 | `space-bunny-free` | Space Bunny Free | `oa-compat` → `POST https://opencode.ai/inference/openai/v1/chat/completions` | 1,048,576 | 32,000 | ✅ 恒开 | `minimal / low / medium / high / xhigh / max`(`none` 钳制为 `minimal`,直接转发上游 400) |
-| `step-5-preview-free` | Step 5 Preview Free(上游已下线,2026-10-17) | `oa-compat` → `POST https://opencode.ai/inference/openai/v1/chat/completions` | 1,000,000 | 32,000 | ✅ 必开 | `minimal / low / medium / high / xhigh / max`(`none` 钳制为 `minimal`,上游 400 "Reasoning is mandatory") |
+| `step-5-preview-free` | Step 5 Preview Free(已别名到 deepseek,**不再上架**) | **oa-compat** → deepseek(2026-10-17 上游下线,2026-10-19 起别名) | 200,000 | 32,000 | ✅ | `low / high / max`(`none` 钳制为 `low`,同 deepseek) |
 | `deepseek-v4.1-flash-free` | DeepSeek V4.1 Flash Free | `oa-compat` → `POST https://opencode.ai/inference/openai/v1/chat/completions` | 200,000 | 32,000 | ✅ | `low / high / max`(`none` 钳制为 `low`;其余未文档化档位丢弃) |
 | `glm-5.3-flash-free` | GLM-5.3-Flash Free | `oa-compat` → `POST https://opencode.ai/inference/openai/v1/chat/completions` | 200,000 | 32,000 | ✅ | `low / high / max`(`none` 钳制为 `low`;其余未文档化档位丢弃) |
+| `big-pickle` | Big Pickle | `oa-compat` → 同上(chat/completions) | 200,000 | 32,000 | ✅ 恒开 | 无(目录 `reasoning_options` 为空) |
+| `longcat-2.5-preview-free` | LongCat 2.5 Preview Free | `oa-compat` → 同上 | 1,000,000 | 32,000 | ✅ 恒开 | 无(目录只给 `toggle`) |
+| `beam-free` | Beam Free | `oa-compat` → 同上 | 1,048,576 | 32,000 | ✅ | `low / medium / high / xhigh / max`(`none` 钳制为 `low`) |
+| `nemotron-3.5-lightning-free` | Nemotron 3.5 Lightning Free | `oa-compat` → 同上 | 262,144 | 32,000 | ✅ 恒开 | 无(目录 `reasoning_options` 为空) |
+| `nemotron-3-ultra-free` | Nemotron 3 Ultra Free | `oa-compat` → 同上 | 1,000,000 | 32,000 | ✅ 恒开 | 无(目录 `reasoning_options` 为空) |
+| `nemotron-3.5-super-vl-free` | Nemotron 3.5 Super VL Free | `oa-compat` → 同上 | 1,048,576 | 32,000 | ✅ | `none / minimal / low / medium / high / xhigh`(`none` 原样转发) |
 | `muse-spark-1.3-contributor-goal` | Muse Spark 1.3 Contributor Goal(已别名到 deepseek) | **oa-compat** → deepseek(同 muse;goal judge 流式聚合) | 200,000 | 32,000 | ✅ | `low / high / max`(`none` 钳制为 `low`,同 muse) |
 
 ### muse-spark-1.3-contributor-free(2026-10-17 起别名到 deepseek)
@@ -72,13 +82,13 @@ client ──chat/completions──▶ muse-proxy ──alias(muse*/goal/未知 
 - **并行工具调用**:同轮多个 `tool_calls` 必须合并在一条 `assistant` 消息里回放,拆成多条 `assistant` 消息(每条带一个调用)上游直接 400 `invalid_request_error`。网关客户端习惯并行调用,多轮后必触发,表现为“聊几句就报错”。代理已在 `api/_lib/chat-upstream.ts` 的 `lowerInputToMessages` 内把连续 `function_call` 聚合成一条 `assistant(content=null, tool_calls=[...])`,三个门面共用,无需客户端改形状。
 - **路由格式**:`oa-compat`(chat completions);走 `/v1/responses` 上游返回 401 `ModelError: not supported for format openai`。
 
-### step-5-preview-free(2026-10-17 起上游已下线)
+### step-5-preview-free(2026-10-19 起别名到 deepseek,不再上架)
 
-- **定位**:Step 5 限时预览推理模型;2026-10-17 实测 zen 边缘下线(两个挂载一致返回 `Upstream request failed: Model is unavailable.`),目录保留以如实暴露状态——请求它得到 502/错误信息是正确行为。
+- **定位**:Step 5 限时预览推理模型;2026-10-17 实测 zen 边缘下线(两个挂载一致返回 `Upstream request failed: Model is unavailable.`),2026-10-19 复核未恢复,于是按 muse 的同一处理把 id 留在 `MODELS`、`upstreamId` 别名到 `deepseek-v4.1-flash-free`——依赖 step-5 id 的客户端从「必报错」变成「可用」,同时从 `/v1/models` 下架,不再广告必挂的条目。
 - **别名**:`model id 包含 "step-5"` 或以 `step5` 开头即匹配。
-- **思考**:**必开**——上游对 `none` 直接 400 "Reasoning is mandatory for this endpoint and cannot be disabled",因此与 space-bunny 同规则钳制为 `minimal`。
+- **思考**:随别名继承 deepseek 档位 `low/high/max`(`none` 钳制为 `low`);原「必开 + `minimal..max`」白名单随上游下线作废。
 - **路由格式**:`oa-compat`(chat completions)。
-- **定义处**:`api/_lib/types.ts` 的 `STEP5_INFO`。
+- **定义处**:`api/_lib/types.ts` 的 `STEP5_INFO`(`upstreamId: MODEL_DEEPSEEK`)。
 
 ### deepseek-v4.1-flash-free
 
@@ -98,7 +108,22 @@ client ──chat/completions──▶ muse-proxy ──alias(muse*/goal/未知 
 - **能力**:工具调用、图片输入(`attachment`)、`temperature`、结构化输出均可用;`context 200,000` / `output 32,000`(`models.opencode.ai/api.json` 的 `opencode/glm-5.3-flash-free`;目录还带 `canonical_model_id: zhipuai/glm-5.3-flash`)。
 - **定义处**:`api/_lib/types.ts` 的 `GLM_INFO`。
 
-> 上表的档位接受度均为逐档位实测结论(deepseek/glm 2026-10-16、muse 别名后沿用 deepseek 档位 2026-10-17;mimo/space-bunny 2026-09-24 起、step-5 2026-10-10——现已下线);路由与钳制逻辑集中在 `api/_lib/types.ts`(`resolveModel` / `clampEffortForModel`),三个门面共用,新增模型时先更新 `MODELS` 目录再跑 `bun run smoke:newmodels` 与 `bun run smoke:efforts`。
+> `muse-spark-1.3-contributor-free` 与 `step-5-preview-free` 因上游退役(muse 410 `ModelDeprecated`、step-5 400 `Model is unavailable.`)已从 `/v1/models` 下架(`MODELS` 里 `listed: false`),但 id 仍可解析——请求它们会经 `upstreamId` 落到 `deepseek-v4.1-flash-free`,保留历史客户端「永不 404」的契约。
+
+### 2026-10-19 新增的六个存活模型(big-pickle / longcat / beam / nemotron ×3)
+
+条目全部取自 `models.opencode.ai/api.json` 的 `opencode.models`(`id` / `name` / `limit` / `reasoning_options` / `interleaved` / `attachment` / `tool_call` / `cost` 逐字段对照),`cost` 全 0 的存活条目无一遗漏;六个 id 的 `provider.api` 均为 `/inference/openai/v1`,与其他免费档共用 oa-compat chat 挂载(不新增任何转换路径);广告的 `max_output_tokens` 与其它条目一致取 `OUTPUT_TOKEN_MAX`(32,000):
+
+- `big-pickle`(`BIG_PICKLE_INFO`):目录里唯一不带 `-free` 后缀的存活免费条目(成本 0/0/0);`reasoning_options` 为空 → 不下发 `reasoning_effort`;文本输入、工具调用 + 结构化输出。
+- `longcat-2.5-preview-free`(`LONGCAT_INFO`):美团 LongCat 2.5 预览版,1M 上下文、图片输入、多模态推理;目录只给 `toggle` → 不下发档位。
+- `beam-free`(`BEAM_INFO`):稀疏 MoE(23B 激活参数),档位 `low/medium/high/xhigh/max`,`none` 钳制为 `low`。
+- `nemotron-3.5-lightning-free`(`NEMOTRON_LIGHTNING_INFO`):NVIDIA 快速 MoE,262,144 上下文;`reasoning_options` 为空 → 不下发档位。
+- `nemotron-3-ultra-free`(`NEMOTRON_ULTRA_INFO`):最大号 Nemotron 3(1M 上下文);同样不下发档位。
+- `nemotron-3.5-super-vl-free`(`NEMOTRON_SUPER_VL_INFO`):视觉语言推理(text + image 输入);目录档位 `none/minimal/low/medium/high/xhigh`——唯一把 `none` 写进目录的免费条目,代理原样转发。
+
+目录里带 `deprecated` 标记的 id(`cat-jam-free` / `exo-free` / `x-preview-f-free` 等)在退役过渡期,暂不入目录:它们随时可能硬退,`resolveModel` 的未知 id 兜底(别名 deepseek)已保证请求不 404;哪天 zen 真要留某个 id,按 §7.2 四步原样补即可。
+
+> 上表的档位接受度均以目录 `reasoning_options` 为准(deepseek/glm 2026-10-16 逐档实测后按目录收窄;muse/step-5 别名后沿用 deepseek 档位 2026-10-17/19;mimo/space-bunny 2026-09-24 起;big-pickle/longcat/beam/nemotron 三兄弟 2026-10-19 按目录字段录入)。路由与钳制逻辑集中在 `api/_lib/types.ts`(`resolveModel` / `clampEffortForModel`),三个门面共用;新增模型时先更新 `MODELS` 目录,再跑 `bun run smoke:newmodels` 与 `bun run smoke:efforts`(详见 §7.2)。
 
 ---
 
@@ -106,13 +131,13 @@ client ──chat/completions──▶ muse-proxy ──alias(muse*/goal/未知 
 
 ```bash
 bun install            # 或 npm install
-bun run test           # 217 个单元/集成/沙箱端到端测试(mock 上游,无需联网)
+bun run test           # 195 个单元/集成/沙箱端到端测试(mock 上游,无需联网)
 bun run smoke          # 真实连通性冒烟(需联网,验证 stream:false 与 stream:true)
 bun run smoke:responses # /v1/responses 真实上游全功能冒烟(需联网,7 项 36 检查)
 bun run smoke:messages  # /v1/messages 真实上游全功能冒烟(需联网,8 项任务)
-bun run smoke:newmodels # oa-compat 模型 × 三门面全链路真实上游冒烟(需联网,9 项任务 × 5 模型 + muse 回归)
+bun run smoke:newmodels # oa-compat 模型 × 三门面全链路真实上游冒烟(需联网,9 项任务 × 11 模型 + muse 回归)
                        #   矩阵较大,可分片跑:bun run smoke:newmodels glm-5.3-flash-free --steps=chat,chat-stream,responses,responses-stream
-bun run smoke:efforts  # 思考强度档位真实上游冒烟:/v1/models 元数据 + 6 模型档位端到端 + none 钳制
+bun run smoke:efforts  # 思考强度档位真实上游冒烟:/v1/models 元数据 + 8 模型档位端到端 + none 钳制
 bun run smoke:tools    # agent 工具循环真实上游冒烟:3 模型 × 3 门面,流式 tool call → 执行 → 回传 → 结果落地
 bun run smoke:openminis # OpenMinis file_write 真实上游探针:3 门面 × 5 个参数的全量回放 + 模型生成工具调用
 bun run eval           # 完整 agent 评测:xhigh 思考 + web_search 工具循环 + 3 轮多轮对话
@@ -546,6 +571,19 @@ bun run scripts/probe-muse-deprecation.ts   # 全部 7 模型 × 3 端点矩阵
 4. **弃用模型不要试图救活**:Zen 上线即弃用的模型不给宽限期;正确动作是别名(保客户端 id 语义)而非硬编码新 id。
 5. 换挂载后 UA/头/工具逐字复检——本轮新挂载对 2.0.28-2.0.32 的旧 UA 一律放行,但**下次未必**。
 
+### 8.5 2026-10-19 复核:免费集再洗牌 + 六个存活模型入目录 + 退役 id 下架
+
+这一轮同样**不是门禁问题**——完整指纹照旧,变动全在免费集与目录本身。
+
+- **排查路径**:先跑 `bun run scripts/probe-free-sweep.ts`(读 `models.opencode.ai/api.json` 的 `opencode.models`,对每个 `free|pickle` id 同时打 chat / responses 两个挂载,用真实指纹发过闸门 body)。本轮从沙箱网络探测时免费层按 IP 拒绝(403 `FreeTierError`:**“OpenCode's free models aren't available from your current network because we've detected abusive traffic from this network”**——这是 **IP 级封锁**,与指纹/模型无关;mimo/deepseek/glm 等存量模型同样被拒。遇到这个文案不要改指纹,换出口(egress 分支的本机副出口轮询即为此而生)或等待解封;catalog 读取与 `status` 字段不受影响)。`status=deprecated` 的 muse 1.2/1.3 直接 410 `ModelDeprecated`,step-5 仍是 400 `Model is unavailable.`。
+- **结论(以 catalog `status` + 上一轮真实探测为准)**:mimo / space-bunny / deepseek / glm / longcat / beam / nemotron-lightning / nemotron-ultra / nemotron-super-vl 九条 chat 存活,加上不带后缀的 `big-pickle`(成本 0/0/0)共 **10 个存活免费档**;`cat-jam-free` / `exo-free` 等 `deprecated` id 不纳入(见「模型目录」)。
+- **修复(已实施)**:
+  1. `api/_lib/types.ts` 新增六个条目(`BIG_PICKLE_INFO` / `LONGCAT_INFO` / `BEAM_INFO` / `NEMOTRON_LIGHTNING_INFO` / `NEMOTRON_ULTRA_INFO` / `NEMOTRON_SUPER_VL_INFO`),`MODELS` 追加、`resolveModel` 加 `longcat*` / `big-pickle` / `beam*` / `nemotron*`(按 `ultra` / `super-vl` 分流)前缀。
+  2. `STEP5_INFO` 改退休别名(照 muse 处理):保留 id + `upstreamId: MODEL_DEEPSEEK`,档位继承 deepseek(`low/high/max`,`none` → `low`);`MUSE_INFO` / `STEP5_INFO` 加 `listed: false`,`api/models.ts` 过滤不上架——`/v1/models` 不再广告必挂的条目,历史 id 仍解析。
+  3. `api/models.ts` 的 `REASONING_MODELS` 补六个新 id;测试/冒烟全部同步(`chat-upstream.test.ts`、`smoke-newmodels`、`smoke-efforts` 的目录断言;本分支没有 `router.test.ts` / `smoke-step5` / `smoke-edge`)。
+- **验证**:`bun run test` 195/195、`bun run typecheck` 全过(全部 mock 上游,无需联网;本分支无 `typecheck:edge`)。**真上游冒烟本沙箱网络被免费层 IP 封锁无法执行**(见上),需要在本机 egress 部署上按 §7.3 口径补跑:`bun run smoke:newmodels <新模型> --steps=chat,chat-stream`(矩阵大,分片跑)、`bun run smoke:efforts`。
+- **未做**:muse 门的 Responses 直发路径保持删除状态(`chat-upstream.ts` 唯一出口不变);`deprecated` 但暂未硬退的 id 不入目录。
+
 ## 9. 下次上游再更新时的排查清单(Cheat Sheet)
 
 按序检查,命中即修:
@@ -558,8 +596,9 @@ bun run scripts/probe-muse-deprecation.ts   # 全部 7 模型 × 3 端点矩阵
 6. **请求体指纹变了?(2026-09-18 / 2026-10-14 新增此类)** 用抓包体做消融:删 tools / 换 tools / 加 `reasoning` / 改 `prompt_cache_key` / 首条 role 换 `system`,一次只改一项,找到被校验的新字段。内置工具清单与**逐字定义**存于 `api/_lib/tools.ts`,若 CLI 工具集变化则重抓刷新该数组;注意门槛现在会逐字比对描述与参数,且退役名(`bash`/`task`/`todowrite`)与同名遮蔽都会 403——客户端同名工具走 `mp_` 别名。
 7. **上游 API 支持面变了?** 例如 `tool_choice` 现在只支持 `"auto"`;留意 400 响应里的 `param` 字段直接指出被拒参数。
 8. **报错文案 grep 不到?** 校验在闭源边缘服务里,别浪费时间翻 CLI 逻辑,专注完整模仿客户端指纹(头 + 体)。
-9. **免费模型 ID 变了?** 留意 zen 模型目录与 `MODEL_ID`(`muse-spark-1.3-contributor-free`)。
-10. 修复后按顺序跑 `bun run test` → `bun run smoke` → `bun run eval`,全绿再收工。
+9. **免费模型 ID 变了?** 先跑 `bun run scripts/probe-free-sweep.ts` 看 catalog `status` 与存活面;退役 id 走别名 + `listed: false`(见 §8.5),不要报 404。
+10. **新模型要加?** `models.opencode.ai/api.json` 拿条目 → `scripts/probe-free-sweep.ts`(全量存活扫)或 `scripts/probe-deepseek-routing.ts <id>` 探格式(oa-compat 还是 responses)→ `MODELS` / `resolveModel` / `REASONING_MODELS` → `bun run smoke:newmodels <模型> --steps=...` 全项 → `bun run smoke:efforts`。详细步骤见第 7.2 节。
+11. 修复后按顺序跑 `bun run test` → `bun run smoke` → `bun run eval`,全绿再收工;模型矩阵类套件用 `smoke:newmodels` 的 `--steps=` 分片跑,别在一个命令里打几十次真实上游。
 
 ## 10. 行为与合规注意事项
 

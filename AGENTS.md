@@ -41,8 +41,8 @@ egress/supabase 树的改动搬过来时要按本分支惯例重写:门面路径
 
 - 任何改动过门禁:`bun run typecheck && bun run test`。仓库无 lint/format/CI。
 - `bun run test` 全 mock 上游(vitest;`test/e2e.local.test.ts` 与
-  `integration.mock` 自己起本地 HTTP 服务)——**无需联网**。本分支 192 个
-  (egress 217 / supabase 208,数量不齐是分支使然)。单文件:
+  `integration.mock` 自己起本地 HTTP 服务)——**无需联网**。本分支 195 个
+  (egress 220 / supabase 211,数量不齐是分支使然)。单文件:
   `bunx vitest run test/<name>.test.ts`。
 - 真上游冒烟(需 `.env` 与网络):`bun run smoke`、`smoke:responses`、
   `smoke:messages`、`smoke:newmodels`、`smoke:efforts`、`smoke:tools`、
@@ -67,13 +67,18 @@ chat)。已退役:Responses 直发(`/inference/v1/responses`,全部模型)、mus
 2. **客户端指纹**(UA `opencode/<channel>/<version>/<client>`、session-id
    编码、完整头集合)在 `types.ts` / `identity.ts` 伪造;对照真实客户端形状,
    **别"顺手清理"常量**。
-3. **模型路由**:`types.ts` 的 `resolveModel`——`muse*`、goal 与任意未知 id
-   经 `upstreamId` 别名到 `deepseek-v4.1-flash-free`(上游看到 deepseek,
-   客户端看到自己的 id 回显);`step-5-preview-free` 上游已死,目录故意保留。
+3. **模型路由**:`types.ts` 的 `resolveModel`——`muse*`、`step-5*`、goal 与任意
+   未知 id 经 `upstreamId` 别名到 `deepseek-v4.1-flash-free`(上游看到
+   deepseek,客户端看到自己的 id 回显);两个退役 id 以 `listed: false` 从
+   `/v1/models` 下架、保留解析;存活集(mimo / space-bunny / deepseek / glm /
+   big-pickle / longcat / beam / nemotron ×3)各自直连。
 
 接入新模型 = 多文件多分支清单(README §7.2):`MODELS` 目录 + `resolveModel`
 别名 + 不依赖 .env 的测试 + 冒烟脚本 + README。**动实现前先用
-`scripts/probe-*.ts` 当模板打真上游**。
+`scripts/probe-*.ts` 当模板打真上游**;免费集全量复核用
+`bun run scripts/probe-free-sweep.ts`(读 models.opencode.ai catalog + 双挂载
+真探)。403 `FreeTierError` 文案为 "abusive traffic from this network" 时是
+**IP 级封锁**(与指纹无关)——换出口或等待,别改指纹常量。
 
 ## 运维细节
 
