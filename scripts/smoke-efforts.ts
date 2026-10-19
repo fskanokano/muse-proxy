@@ -5,9 +5,19 @@
 // scripts/probe-step5-efforts.ts (2026-10-10):
 //   - mimo: effort tolerated but ignored (reasoning always on) -> no levels
 //   - space-bunny: minimal..max accepted, none -> upstream 400
-//   - step-5: minimal..max accepted; none -> upstream 400 ("Reasoning is
-//     mandatory for this endpoint and cannot be disabled"), clamped to
-//     minimal — same rule as space-bunny (re-probed 2026-10-10)
+//   - step-5: RETIRED upstream 2026-10-17 (400 "Model is unavailable." on
+//     every mount); since 2026-10-19 the id aliases deepseek-v4.1-flash-free,
+//     so it advertises and clamps exactly like deepseek and is delisted from
+//     /v1/models (see _lib/types.ts `listed`)
+//   - big-pickle / longcat-2.5-preview-free / nemotron-3.5-lightning-free /
+//     nemotron-3-ultra-free: reasoning always on with no advertised levels
+//     (catalog empty reasoning_options / `toggle`) -> field dropped, same as
+//     mimo (catalog read 2026-10-19)
+//   - beam-free: catalog levels low/medium/high/xhigh/max; none clamps to low,
+//     the rest is dropped (catalog read 2026-10-19)
+//   - nemotron-3.5-super-vl-free: the only free entry whose catalog levels
+//     INCLUDE none (none/minimal/low/medium/high/xhigh), so none is forwarded
+//     verbatim instead of being clamped (catalog read 2026-10-19)
 //   - deepseek-v4.1-flash-free: the catalog documents low/high/max only, but
 //     the live edge answers 200 for every effort string (probed 2026-10-16,
 //     scripts/probe-deepseek-routing.ts with PROBE_EFFORTS=1) and keeps
@@ -24,14 +34,15 @@
 //   3. space-bunny at minimal / high / max each completes end-to-end
 //   4. space-bunny with effort none is clamped to minimal (no 400) and
 //      the reasoning_content stream is still present (reasoning always on)
-//   5. step-5 at minimal / high / max each completes end-to-end, and effort
-//      none is clamped to minimal (the upstream 400s on none — reasoning is
-//      mandatory)
+//   5. step-5 (deepseek alias since the 2026-10-17 retirement) at low / high /
+//      max completes end-to-end, and effort none is clamped to low
 //   6. deepseek at low / high / max each completes; none clamps to low and
 //      the undocumented levels are dropped rather than forwarded
 //   7. glm at low / high / max each completes; none clamps to low and the
 //      undocumented levels are dropped rather than forwarded
-//   8. muse effort=high unaffected (regression)
+//   8. muse effort=high unaffected (regression: muse ids alias deepseek)
+//   9. the 2026-10-19 additions: beam at low / max completes, and
+//      nemotron-3.5-super-vl at none / high completes (none is documented)
 
 import * as http from "node:http"
 import { handleChatRequest } from "../api/chat"
@@ -138,16 +149,27 @@ console.log("\n[1] /v1/models reasoning metadata")
   const byId = new Map((body.data ?? []).map((m) => [m.id, m]))
   const mimo = byId.get("mimo-v2.6-flash-free")
   const bunny = byId.get("space-bunny-free")
-  const step5 = byId.get("step-5-preview-free")
   const deepseek = byId.get("deepseek-v4.1-flash-free")
   const glm = byId.get("glm-5.3-flash-free")
-  const muse = byId.get("muse-spark-1.3-contributor-free")
   expect(mimo?.reasoning === true && Array.isArray(mimo?.reasoning_levels) && mimo!.reasoning_levels!.length === 0, "mimo reasoning=true, no levels", JSON.stringify({ reasoning: mimo?.reasoning, levels: mimo?.reasoning_levels }))
   expect(bunny?.reasoning === true && bunny!.reasoning_levels!.join(",") === "minimal,low,medium,high,xhigh,max", "space-bunny minimal..max", JSON.stringify(bunny?.reasoning_levels))
-  expect(step5?.reasoning === true && step5!.reasoning_levels!.join(",") === "minimal,low,medium,high,xhigh,max", "step-5 minimal..max", JSON.stringify(step5?.reasoning_levels))
   expect(deepseek?.reasoning === true && deepseek!.reasoning_levels!.join(",") === "low,high,max", "deepseek low/high/max", JSON.stringify(deepseek?.reasoning_levels))
   expect(glm?.reasoning === true && glm!.reasoning_levels!.join(",") === "low,high,max", "glm low/high/max", JSON.stringify(glm?.reasoning_levels))
-  expect(muse?.reasoning === true && muse!.reasoning_levels!.join(",") === "none,minimal,low,medium,high,xhigh", "muse none..xhigh", JSON.stringify(muse?.reasoning_levels))
+  // 退役 id 已下架: /v1/models 不得再广告它们。
+  expect(byId.get("step-5-preview-free") === undefined, "step-5 (deepseek alias) delisted from /v1/models")
+  expect(byId.get("muse-spark-1.3-contributor-free") === undefined, "muse (deepseek alias) delisted from /v1/models")
+  const pickle = byId.get("big-pickle")
+  const longcat = byId.get("longcat-2.5-preview-free")
+  const beam = byId.get("beam-free")
+  const lightning = byId.get("nemotron-3.5-lightning-free")
+  const ultra = byId.get("nemotron-3-ultra-free")
+  const superVl = byId.get("nemotron-3.5-super-vl-free")
+  expect(pickle?.reasoning === true && pickle!.reasoning_levels!.length === 0, "big-pickle reasoning=true, no levels", JSON.stringify(pickle?.reasoning_levels))
+  expect(longcat?.reasoning === true && longcat!.reasoning_levels!.length === 0, "longcat reasoning=true, no levels", JSON.stringify(longcat?.reasoning_levels))
+  expect(beam?.reasoning === true && beam!.reasoning_levels!.join(",") === "low,medium,high,xhigh,max", "beam low..max", JSON.stringify(beam?.reasoning_levels))
+  expect(lightning?.reasoning === true && lightning!.reasoning_levels!.length === 0, "nemotron-lightning reasoning=true, no levels", JSON.stringify(lightning?.reasoning_levels))
+  expect(ultra?.reasoning === true && ultra!.reasoning_levels!.length === 0, "nemotron-ultra reasoning=true, no levels", JSON.stringify(ultra?.reasoning_levels))
+  expect(superVl?.reasoning === true && superVl!.reasoning_levels!.join(",") === "none,minimal,low,medium,high,xhigh", "nemotron-super-vl none..xhigh", JSON.stringify(superVl?.reasoning_levels))
 }
 
 console.log("\n[2] mimo effort tolerated (always-on reasoning)")
@@ -168,8 +190,8 @@ console.log("\n[4] space-bunny effort=none clamped to minimal (no upstream 400)"
   expect(r.ok, "space-bunny effort=none completes", r.content.slice(0, 60))
 }
 
-console.log("\n[5] step-5 effort levels end-to-end (none clamped to minimal)")
-for (const level of ["none", "minimal", "high", "max"]) {
+console.log("\n[5] step-5 effort levels end-to-end (retired id, deepseek alias: none clamped to low)")
+for (const level of ["none", "low", "high", "max"]) {
   const r = await chatWithEffort("step-5-preview-free", level)
   expect(r.ok, `step-5 effort=${level} completes with 144`, r.content.slice(0, 60))
 }
@@ -194,10 +216,20 @@ for (const level of ["none", "minimal", "medium", "xhigh"]) {
   expect(r.ok, `glm effort=${level} completes with 144`, r.content.slice(0, 60))
 }
 
-console.log("\n[8] muse effort=high regression")
+console.log("\n[8] muse effort=high regression (deepseek alias)")
 {
   const r = await chatWithEffort("muse-spark-1.3-contributor-free", "high")
   expect(r.ok, "muse effort=high completes with 144", r.content.slice(0, 60))
+}
+
+console.log("\n[9] 2026-10-19 additions: beam + nemotron-super-vl effort levels end-to-end")
+for (const level of ["low", "max"]) {
+  const r = await chatWithEffort("beam-free", level)
+  expect(r.ok, `beam effort=${level} completes with 144`, r.content.slice(0, 60))
+}
+for (const level of ["none", "high"]) {
+  const r = await chatWithEffort("nemotron-3.5-super-vl-free", level)
+  expect(r.ok, `nemotron-3.5-super-vl-free effort=${level} completes with 144`, r.content.slice(0, 60))
 }
 
 console.log(`\n=== RESULT: ${passed} passed, ${failures.length} failed ===`)

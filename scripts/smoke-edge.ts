@@ -24,6 +24,10 @@
 const BASE = (process.env.EDGE_BASE_URL ?? "http://127.0.0.1:8788/functions/v1/muse-proxy/v1").replace(/\/+$/, "")
 const KEY = process.env.PROXY_API_KEY ?? ""
 const MODELS = ["muse-spark-1.3-contributor-free", "mimo-v2.6-flash-free", "space-bunny-free"]
+// Upstream-retired ids stay resolvable (deepseek alias) but are delisted from
+// /v1/models (see _lib/types.ts `listed`); they keep driving the alias path
+// below but are excluded from the catalog-presence checks.
+const DELISTED_MODELS = new Set(["muse-spark-1.3-contributor-free", "step-5-preview-free"])
 // Builtin tool names of the current opencode CLI, as captured from its real
 // wire request (see supabase/functions/muse-proxy/_lib/tools.ts). Kept inline so
 // this conformance client stays dependency-free: it talks HTTP to a deployed
@@ -665,13 +669,18 @@ async function checkPlatform(): Promise<void> {
   check(catalog.status === 200, "GET /v1/models is auth-legal", `status=${catalog.status}`)
   const list = (await catalog.json()) as { object?: string; data?: Array<{ id?: string; reasoning_levels?: string[]; context_window?: number }> }
   check(list.object === "list", "catalog uses the OpenAI models-list envelope", String(list.object))
-  // The catalog may grow (e.g. step-5-preview-free); assert every model this
-  // suite drives is present rather than a hardcoded total.
-  check((list.data ?? []).length >= MODELS.length, `catalog lists at least every smoke model (${MODELS.length})`, String((list.data ?? []).length))
-  for (const model of MODELS) {
+  // The catalog may grow; assert every LIVE model this suite drives is present
+  // rather than a hardcoded total, and that retired ids stay delisted.
+  const listed = (list.data ?? []).map((candidate) => candidate.id)
+  const live = MODELS.filter((model) => !DELISTED_MODELS.has(model))
+  check(listed.length >= live.length, `catalog lists at least every live smoke model (${live.length})`, String(listed.length))
+  for (const model of live) {
     const entry = (list.data ?? []).find((candidate) => candidate.id === model)
     check(entry !== undefined, `catalog contains ${model}`)
     check((entry?.context_window ?? 0) > 0, `catalog reports a context window for ${model}`, String(entry?.context_window))
+  }
+  for (const model of DELISTED_MODELS) {
+    check(!listed.includes(model), `catalog hides the retired id ${model}`, listed.join(","))
   }
   const mimo = (list.data ?? []).find((candidate) => candidate.id === "mimo-v2.6-flash-free")
   const bunny = (list.data ?? []).find((candidate) => candidate.id === "space-bunny-free")
