@@ -17,9 +17,12 @@ check("healthz", health.ok && (await health.text()) === "ok");
 
 const models = await fetch(`${BASE}/v1/models`, { headers: { authorization: `Bearer ${KEY}` } });
 const modelsJson = (await models.json().catch(() => null)) as { data?: Array<{ id?: string }> } | null;
+// 退役 id(muse / step-5)不上架;目录必须含存活模型(sanity: deepseek 在, muse 不在)。
 check(
   "models",
-  models.status === 200 && Array.isArray(modelsJson?.data) && modelsJson.data.some((m) => m.id === "muse-spark-1.3-contributor-free"),
+  models.status === 200 && Array.isArray(modelsJson?.data) &&
+    modelsJson.data.some((m) => m.id === "deepseek-v4.1-flash-free") &&
+    !modelsJson.data.some((m) => m.id === "muse-spark-1.3-contributor-free"),
   `status=${models.status}`,
 );
 const deepseekEntry = modelsJson?.data?.find((m) => m.id === "deepseek-v4.1-flash-free") as

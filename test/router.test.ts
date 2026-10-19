@@ -138,12 +138,16 @@ describe("edge function dispatch", () => {
     const body = (await res.json()) as { object: string; data: Array<{ id: string }> }
     expect(body.object).toBe("list")
     expect(body.data.map((model) => model.id)).toEqual([
-      "muse-spark-1.3-contributor-free",
       "mimo-v2.6-flash-free",
       "space-bunny-free",
-      "step-5-preview-free",
       "deepseek-v4.1-flash-free",
       "glm-5.3-flash-free",
+      "big-pickle",
+      "longcat-2.5-preview-free",
+      "beam-free",
+      "nemotron-3.5-lightning-free",
+      "nemotron-3-ultra-free",
+      "nemotron-3.5-super-vl-free",
       "muse-spark-1.3-contributor-goal",
     ])
     expect(calls).toHaveLength(0)

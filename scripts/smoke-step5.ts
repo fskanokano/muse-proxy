@@ -1,12 +1,14 @@
-// Real end-to-end smoke for step-5-preview-free ONLY (network required).
-// Usage: bun run smoke:step5
+// Real end-to-end smoke for the RETIRED step-5-preview-free id (network
+// required). Usage: bun run smoke:step5
 //
-// step-5-preview-free is the fourth free zen model (added 2026-10-10). It
-// routes through the oa-compat upstream (/zen/v1/chat/completions) exactly
-// like mimo / space-bunny, so every facade, tool loop and clamp works over
-// the shared converter — this script proves that against the REAL edge and
-// additionally pins down step-5's own surface:
-//   1. /v1/models catalog entry (id, reasoning, levels minimal..max, limits)
+// step-5-preview-free was a free zen model (added 2026-10-10, retired
+// upstream 2026-10-17: 400 "Model is unavailable." on every mount). Since
+// 2026-10-19 the id is handled like the retired muse ids: it stays resolvable
+// but aliases deepseek-v4.1-flash-free over the oa-compat chat upstream, and
+// it is delisted from /v1/models. This script proves the alias path
+// end-to-end against the REAL edge:
+//   1. /v1/models hides the retired id (delisted) while the served-by entry
+//      (deepseek) is advertised with low/high/max
 //   2. alias routing (step5 / Step-5-Preview-Free -> canonical id)
 //   3. chat non-streaming + streaming
 //   4. responses non-streaming + streaming (canonical lifecycle)
@@ -16,7 +18,7 @@
 //      a reasoning model MAY stay silent on a trivial prompt
 //   7. chat tool loop with grounding (streamed tool_calls -> result -> answer)
 //   8. parallel tool calls replayed merged in ONE assistant message
-//   9. reasoning efforts none (clamped) / minimal / high / max each complete
+//   9. reasoning efforts none (clamped to low) / low / high / max each complete
 //  10. multi-turn memory
 //  11. large streaming generation with a sane usage chunk
 //  12. regression: muse + mimo + space-bunny still complete unchanged
@@ -188,20 +190,20 @@ async function catalogEntry(): Promise<void> {
   const res = await fetch(`${BASE}/v1/models`, { headers: { authorization: `Bearer ${KEY}` } })
   expect(res.status === 200, "[catalog] HTTP 200", `status=${res.status}`)
   const body = (await res.json()) as { data?: Array<Record<string, unknown>> }
-  const entry = (body.data ?? []).find((m) => m.id === MODEL)
-  expect(entry !== undefined, "[catalog] step-5-preview-free present")
-  if (!entry) return
-  expect(entry.reasoning === true, "[catalog] reasoning=true")
-  expect(
-    (entry.reasoning_levels as string[] | undefined)?.join(",") === "minimal,low,medium,high,xhigh,max",
-    "[catalog] levels minimal..max (none clamped)",
-    JSON.stringify(entry.reasoning_levels),
-  )
-  expect(entry.context_window === 1_000_000, "[catalog] context_window 1,000,000", String(entry.context_window))
-  expect(entry.max_output_tokens === 32_000, "[catalog] max_output_tokens 32,000", String(entry.max_output_tokens))
-  expect(entry.owned_by === "opencode-zen", "[catalog] owned_by opencode-zen", String(entry.owned_by))
   const ids = (body.data ?? []).map((m) => m.id as string)
-  expect(ids.length === 4, "[catalog] exactly four models listed", ids.join(","))
+  // Retired id: resolvable but delisted — the catalog must not advertise it.
+  expect(!ids.includes(MODEL), "[catalog] step-5-preview-free delisted (not in /v1/models)", ids.join(","))
+  // The entry actually served (deepseek) carries the alias metadata.
+  const served = (body.data ?? []).find((m) => m.id === "deepseek-v4.1-flash-free")
+  expect(served !== undefined, "[catalog] served-by entry deepseek-v4.1-flash-free present")
+  if (!served) return
+  expect(served.reasoning === true, "[catalog] served-by reasoning=true")
+  expect(
+    (served.reasoning_levels as string[] | undefined)?.join(",") === "low,high,max",
+    "[catalog] served-by levels low/high/max (alias metadata)",
+    JSON.stringify(served.reasoning_levels),
+  )
+  expect(served.owned_by === "opencode-zen", "[catalog] served-by owned_by opencode-zen", String(served.owned_by))
 }
 
 // ---------------------------------------------------------------------------
@@ -566,11 +568,11 @@ async function parallelToolReplay(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// 9) reasoning efforts end-to-end (none is clamped — upstream 400s on it)
+// 9) reasoning efforts end-to-end (retired id aliases deepseek; none -> low)
 // ---------------------------------------------------------------------------
 
 async function efforts(): Promise<void> {
-  for (const effort of ["none", "minimal", "high", "max"]) {
+  for (const effort of ["none", "low", "high", "max"]) {
     let res = await postRetrying("/v1/chat/completions", {
       model: MODEL,
       stream: true,
@@ -691,7 +693,7 @@ async function main(): Promise<void> {
     ["9/12 reasoning streams on all facades", reasoningStreams],
     ["10/12 chat tool loop (grounded)", chatToolLoop],
     ["11/12 parallel tool replay (merged)", parallelToolReplay],
-    ["12/12 efforts none/minimal/high/max", efforts],
+    ["12/12 efforts none/low/high/max (deepseek alias)", efforts],
     ["13/12 multi-turn memory", multiTurnMemory],
     ["14/12 large streaming", largeStreaming],
     ["15/12 regression (muse/mimo/space-bunny)", regression],
