@@ -80,7 +80,11 @@ function userItemToMessage(item: Extract<UpstreamInputItem, { role: "user" }>): 
 function assistantItemToMessages(
   item: Extract<UpstreamInputItem, { role: "assistant" }>,
 ): Record<string, unknown> {
-  return { role: "assistant", content: item.content.map((part) => part.text).join("") }
+  return {
+    role: "assistant",
+    content: item.content.map((part) => part.text).join(""),
+    ...(item.reasoning_content !== undefined ? { reasoning_content: item.reasoning_content } : {}),
+  }
 }
 
 
@@ -96,34 +100,58 @@ export function lowerInputToMessages(input: UpstreamInputItem[]): Array<Record<s
   // space-bunny 上游把同轮并行调用拆成多条 assistant 消息直接判 400，
   // 直打上游对照已确认：拆分必 400，合并必 200。
   let pendingCalls: Array<Record<string, unknown>> = []
+  let pendingReasoning: string | undefined
+  let lastAssistantReasoning: string | undefined
   const flushPendingCalls = () => {
     if (pendingCalls.length > 0) {
-      messages.push({ role: "assistant", content: null, tool_calls: pendingCalls })
+      const reasoning = pendingReasoning ?? lastAssistantReasoning
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: pendingCalls,
+        ...(reasoning !== undefined ? { reasoning_content: reasoning } : {}),
+      })
       pendingCalls = []
     }
+    pendingReasoning = undefined
   }
   for (const item of input) {
-    // Encrypted reasoning replay is session-bound; drop (same as muse path).
+    // Encrypted reasoning blobs stay dropped (session-bound); the visible
+    // reasoning text rides on the assistant/function_call items below.
     if ("type" in item) {
       if (item.type === "function_call") {
+        if (item.reasoning_content !== undefined) pendingReasoning = item.reasoning_content
         pendingCalls.push({ id: item.call_id, type: "function", function: { name: item.name, arguments: item.arguments } })
       } else if (item.type === "function_call_output") {
         flushPendingCalls()
+        lastAssistantReasoning = undefined
         messages.push(functionCallOutputItemToMessage(item))
       }
       continue
     }
     flushPendingCalls()
     if (item.role === "system") {
+      lastAssistantReasoning = undefined
       messages.push(systemItemToMessage(item))
     } else if (item.role === "user") {
+      lastAssistantReasoning = undefined
       messages.push(userItemToMessage(item))
     } else {
+      lastAssistantReasoning = item.reasoning_content
       messages.push(assistantItemToMessages(item))
     }
   }
   flushPendingCalls()
   return messages
+}
+
+// Mirrors the opencode lowering rule: any model whose id names deepseek is a
+// thinking-mode model whose chat wire requires `reasoning_content` on every
+// replayed assistant message, even when the turn produced no visible thinking
+// (the field is then an empty string).
+export function requiresReasoningContent(model: ModelInfo): boolean {
+  const id = `${model.id} ${model.upstreamId ?? ""}`.toLowerCase()
+  return id.includes("deepseek")
 }
 
 type ChatToolShape = NonNullable<ChatUpstreamRequest["tools"]>
@@ -158,11 +186,19 @@ export interface LowerChatUpstreamOptions {
 
 export function lowerChatUpstream(options: LowerChatUpstreamOptions): ChatUpstreamRequest {
   const { model, input, tools } = options
+  const messages = lowerInputToMessages(input)
+  if (requiresReasoningContent(model)) {
+    for (const message of messages) {
+      if (message.role === "assistant" && typeof message.reasoning_content !== "string") {
+        message.reasoning_content = ""
+      }
+    }
+  }
   const request: ChatUpstreamRequest = {
     // Deprecation aliases (muse/goal -> deepseek) keep their client-facing id
     // but ship the live model's id on the wire.
     model: model.upstreamId ?? model.id,
-    messages: lowerInputToMessages(input),
+    messages,
     stream: true,
     stream_options: { include_usage: true },
   }

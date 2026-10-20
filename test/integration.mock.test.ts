@@ -109,7 +109,7 @@ describe("multi-turn integration", () => {
     expect(last.usage?.total_tokens).toBe(18)
   })
 
-  it("two-turn tool loop: turn 2 replays the function_call round-trip without reasoning blobs", async () => {
+  it("two-turn tool loop: turn 2 replays visible reasoning + function_call round-trip", async () => {
     // ---- Turn 1: model decides to call the echo tool ----
     mockUpstream([
       sseResponse([
@@ -181,15 +181,15 @@ describe("multi-turn integration", () => {
       stream: boolean
     }
 
-    // Encrypted-reasoning replay is dropped (session-bound blobs are rejected
-    // upstream); the wire is a chat messages array with the tool round-trip
-    // collapsed into assistant(tool_calls) + tool.
+    // Encrypted-reasoning blobs stay dropped (session-bound), but the visible
+    // reasoning text is replayed: DeepSeek thinking mode 400s without it.
     const roles = turn2RequestBody.messages.map((item) => item.role)
     expect(roles).toEqual(["user", "assistant", "tool"])
 
     expect(turn2RequestBody.messages[1]).toEqual({
       role: "assistant",
       content: null,
+      reasoning_content: "need the echo tool",
       tool_calls: [{ id: "call_1", type: "function", function: { name: "echo", arguments: "{\"text\":\"hi\"}" } }],
     })
     expect(turn2RequestBody.messages[2]).toEqual({
@@ -208,7 +208,7 @@ describe("multi-turn integration", () => {
     expect(turn2RequestBody.stream).toBe(true)
   })
 
-  it("three-turn long conversation: reasoning blobs dropped; tool round-trips replayed", async () => {
+  it("three-turn long conversation: visible reasoning replayed; encrypted blobs dropped", async () => {
     // The agent strips reasoning_details from the FIRST assistant message
     // (some clients drop unknown fields) but preserves the second one.
     const preservedDetails = encodeReasoningDetails([
@@ -250,18 +250,19 @@ describe("multi-turn integration", () => {
     const roles = body.messages.map((item) => item.role)
     expect(roles).toEqual(["user", "assistant", "tool", "user", "assistant", "user"])
 
-    // Encrypted-reasoning replay is dropped entirely (session-bound blobs
-    // are rejected upstream); multi-turn continues via text + tool history.
+    // Encrypted blobs stay dropped (session-bound), visible reasoning replays.
     const serialized = JSON.stringify(body.messages)
     expect(serialized).not.toContain("rs_3")
     expect(serialized).not.toContain("E3")
-    expect(serialized).not.toContain("one\\ntwo")
+    expect(serialized).toContain("one\\ntwo")
+    expect(serialized).toContain("three")
 
     // The function_call round-trip from turn 1 is still replayed, merged into
-    // a single assistant message.
+    // a single assistant message that carries the turn's visible reasoning.
     expect(body.messages[1]).toEqual({
       role: "assistant",
       content: null,
+      reasoning_content: "one\ntwo",
       tool_calls: [{ id: "c1", type: "function", function: { name: "toolA", arguments: "{}" } }],
     })
     expect(body.messages[2]).toEqual({ role: "tool", tool_call_id: "c1", content: "ok" })

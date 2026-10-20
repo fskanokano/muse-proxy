@@ -185,15 +185,36 @@ describe("normalizeResponsesRequest", () => {
     ])
   })
 
-  it("drops all reasoning replay items (session-bound blobs rejected upstream)", () => {
+  it("replays reasoning summary text but never the session-bound encrypted blob", () => {
     const result = normalizeResponsesRequest({
       input: [
-        { type: "reasoning", id: "rs_bad" },
         { type: "reasoning", id: "rs_ok", summary: [{ type: "summary_text", text: "thought" }], encrypted_content: "ENC" },
+        { role: "assistant", content: "answer" },
       ],
     })
     if ("error" in result) throw new Error("unexpected error")
-    expect(result.request.input).toEqual([])
+    expect(result.request.input).toEqual([
+      { role: "assistant", content: [{ type: "output_text", text: "answer" }], reasoning_content: "thought" },
+    ])
+    expect(JSON.stringify(result.request.input)).not.toContain("ENC")
+  })
+
+  it("carries reasoning onto a tool-call turn, even without summary text", () => {
+    const result = normalizeResponsesRequest({
+      input: [
+        { type: "reasoning", id: "rs_tool" },
+        { type: "function_call", call_id: "c1", name: "echo", arguments: "{}" },
+        { type: "function_call_output", call_id: "c1", output: "ok" },
+      ],
+    })
+    if ("error" in result) throw new Error("unexpected error")
+    expect(result.request.input[0]).toEqual({
+      type: "function_call",
+      call_id: "c1",
+      name: "echo",
+      arguments: "{}",
+      reasoning_content: "",
+    })
   })
 
   it("rejects item_reference (stateless proxy) and unsupported items", () => {
@@ -716,7 +737,7 @@ describe("responses endpoint integration", () => {
     expect(text).not.toContain("upstream_stream_truncated")
   })
 
-  it("drops multi-turn encrypted reasoning replay instead of sending it upstream", async () => {
+  it("replays visible reasoning text without the encrypted blob on tool turns", async () => {
     mockUpstream([sseResponse([{ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }])])
     await handleResponsesRequest(
       post({
@@ -729,12 +750,12 @@ describe("responses endpoint integration", () => {
       }),
       ENV,
     )
-    // The oa-compat wire carries a chat messages array: reasoning glitches are
-    // dropped, function_call outputs replay as assistant(tool_calls)+tool.
+    // The oa-compat wire carries a chat messages array: the visible summary is
+    // replayed as reasoning_content, the encrypted blob never leaves the proxy.
     const body = JSON.parse(String(calls[0]!.init!.body)) as { messages: Array<Record<string, unknown>> }
     const roles = body.messages.map((item) => item.role)
     expect(roles).toEqual(["user", "assistant", "tool"])
-    expect(body.messages[1]).toMatchObject({ role: "assistant" })
+    expect(body.messages[1]).toMatchObject({ role: "assistant", reasoning_content: "thought" })
     expect((body.messages[1] as { tool_calls?: unknown[] }).tool_calls).toHaveLength(1)
     const tool = body.messages[2] as { tool_call_id?: string }
     expect(tool.tool_call_id).toBe("c1")

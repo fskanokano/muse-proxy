@@ -1,7 +1,8 @@
 // Lower an OpenAI Chat Completions request body into an opencode zen
 // Responses API request. Mirrors opencode's own lowering rules for muse
 // models: store:false, include encrypted reasoning, reasoning summary auto,
-// effort whitelisting (encrypted-reasoning replay is dropped: blobs are session-bound).
+// effort whitelisting (encrypted blobs are never replayed — session-bound —
+// but visible reasoning is, as reasoning_content).
 //
 // Free-tier fingerprint note: the zen edge also gates on the request body's
 // tools array — the opencode builtin tool names must be present or the
@@ -113,7 +114,10 @@ function systemText(content: unknown): string | undefined {
 // gateways with their own format). We can't interpret those safely, so we
 // ignore them — reasoning continuity then degrades gracefully instead of
 // failing the request upstream.
-function toolCallItems(message: Record<string, unknown>): UpstreamInputItem[] | { error: true } {
+function toolCallItems(
+  message: Record<string, unknown>,
+  reasoning: string | undefined,
+): UpstreamInputItem[] | { error: true } {
   const calls = message.tool_calls
   if (calls === undefined || calls === null) return []
   if (!Array.isArray(calls)) return { error: true }
@@ -125,9 +129,24 @@ function toolCallItems(message: Record<string, unknown>): UpstreamInputItem[] | 
     const name = asString(fn?.name)
     if (id === undefined || name === undefined) return { error: true }
     const args = asString(fn?.arguments) ?? "{}"
-    items.push({ type: "function_call", call_id: id, name, arguments: args })
+    items.push({
+      type: "function_call",
+      call_id: id,
+      name,
+      arguments: args,
+      ...(reasoning !== undefined ? { reasoning_content: reasoning } : {}),
+    })
   }
   return items
+}
+
+// Clients replay the visible thinking of an assistant turn in whichever
+// dialect they speak; the chat wire only knows `reasoning_content`.
+function assistantReasoning(message: Record<string, unknown>): string | undefined {
+  for (const field of ["reasoning_content", "reasoning", "reasoning_text"] as const) {
+    if (typeof message[field] === "string") return message[field]
+  }
+  return undefined
 }
 
 function toolResultItem(message: Record<string, unknown>): UpstreamInputItem | { error: true } {
@@ -235,13 +254,20 @@ export function lowerRequest(chat: unknown, options: LowerOptions = {}): LowerRe
     }
 
     if (role === "assistant") {
-      // Encrypted-reasoning replay dropped (blobs are session-bound, and
-      // this proxy mints a fresh session per request): continue via text.
+      // Visible reasoning must be replayed: DeepSeek thinking mode rejects a
+      // history whose assistant turns drop it ("reasoning_content ... must be
+      // passed back"). Encrypted reasoning blobs stay dropped — they are
+      // session-bound and this proxy mints a fresh session per request.
+      const reasoning = assistantReasoning(entry)
       const text = typeof entry.content === "string" ? entry.content : undefined
       if (text !== undefined && text.length > 0) {
-        input.push({ role: "assistant", content: [{ type: "output_text", text }] })
+        input.push({
+          role: "assistant",
+          content: [{ type: "output_text", text }],
+          ...(reasoning !== undefined ? { reasoning_content: reasoning } : {}),
+        })
       }
-      const calls = toolCallItems(entry)
+      const calls = toolCallItems(entry, reasoning)
       if ("error" in calls) {
         return { error: { status: 400, message: "unsupported tool_calls shape" } }
       }
