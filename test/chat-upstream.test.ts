@@ -80,6 +80,62 @@ describe("lowerInputToMessages", () => {
   })
 })
 
+describe("deepseek thinking-mode reasoning replay", () => {
+  const assistant = (text: string): UpstreamInputItem => ({
+    role: "assistant",
+    content: [{ type: "output_text", text }],
+  })
+
+  it("fills reasoning_content on every replayed assistant message, tool turns included", () => {
+    const request = lowerChatUpstream({
+      model: MODELS["deepseek-v4.1-flash-free"]!,
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "go" }] },
+        assistant("on it"),
+        { type: "function_call", call_id: "c1", name: "read", arguments: "{}" },
+        { type: "function_call_output", call_id: "c1", output: "ok" },
+        assistant("done"),
+      ],
+      tools: [],
+    })
+    expect(request.messages).toEqual([
+      { role: "user", content: "go" },
+      { role: "assistant", content: "on it", reasoning_content: "" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }],
+        reasoning_content: "",
+      },
+      { role: "tool", tool_call_id: "c1", content: "ok" },
+      { role: "assistant", content: "done", reasoning_content: "" },
+    ])
+  })
+
+  it("keeps visible reasoning as-is on text and tool-call turns", () => {
+    const request = lowerChatUpstream({
+      model: MODELS["deepseek-v4.1-flash-free"]!,
+      input: [
+        assistant("on it"),
+        { type: "function_call", call_id: "c1", name: "read", arguments: "{}", reasoning_content: "need a file" },
+        { type: "function_call_output", call_id: "c1", output: "ok" },
+      ],
+      tools: [],
+    })
+    expect(request.messages[0]).toMatchObject({ role: "assistant", reasoning_content: "" })
+    expect(request.messages[1]).toMatchObject({ role: "assistant", reasoning_content: "need a file" })
+  })
+
+  it("leaves non-deepseek oa-compat models untouched", () => {
+    const request = lowerChatUpstream({
+      model: MODELS["space-bunny-free"]!,
+      input: [assistant("hello")],
+      tools: [],
+    })
+    expect(request.messages).toEqual([{ role: "assistant", content: "hello" }])
+  })
+})
+
 describe("lowerChatUpstream", () => {
   it("targets the resolved model id and always streams with usage", () => {
     const request = lowerChatUpstream({

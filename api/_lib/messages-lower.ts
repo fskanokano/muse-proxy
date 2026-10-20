@@ -10,9 +10,10 @@
 //   - assistant text block / string          -> output_text
 //   - assistant tool_use block               -> function_call (call_id = id)
 //   - user tool_result block                 -> function_call_output
-//   - assistant/user thinking block          -> dropped (upstream replay is
-//      done via OpenAI encrypted_content, which the Anthropic facade does
-//      not carry; dropping keeps multi-turn memory working via plain text)
+//   - assistant thinking block               -> reasoning_content on that turn
+//      (DeepSeek thinking mode requires the visible reasoning back; Anthropic
+//      signatures are not replayable, so only the text is carried)
+//   - user thinking block                    -> dropped (no assistant turn)
 //   - tools {name, input_schema}             -> upstream function tools,
 //      appended after the stubbed opencode builtin set (free-tier fingerprint)
 //   - tool_choice                            -> always "auto" upstream
@@ -143,6 +144,11 @@ function assistantBlocksToItems(
   blocks: Array<Record<string, unknown>>,
   state: { input: UpstreamInputItem[] },
 ): { error: true } | undefined {
+  const thinking = blocks.filter((block) => block.type === "thinking")
+  const reasoning =
+    thinking.length === 0
+      ? undefined
+      : thinking.map((block) => (typeof block.thinking === "string" ? block.thinking : "")).join("")
   const texts: string[] = []
   for (const block of blocks) {
     if (block.type === "text" && typeof block.text === "string") {
@@ -155,17 +161,30 @@ function assistantBlocksToItems(
       if (id === undefined || name === undefined) return { error: true }
       const input = isRecord(block.input) ? JSON.stringify(block.input) : "{}"
       if (texts.length > 0) {
-        state.input.push({ role: "assistant", content: [{ type: "output_text", text: texts.join("") }] })
+        state.input.push({
+          role: "assistant",
+          content: [{ type: "output_text", text: texts.join("") }],
+          ...(reasoning !== undefined ? { reasoning_content: reasoning } : {}),
+        })
         texts.length = 0
       }
-      state.input.push({ type: "function_call", call_id: id, name, arguments: input })
+      state.input.push({
+        type: "function_call",
+        call_id: id,
+        name,
+        arguments: input,
+        ...(reasoning !== undefined ? { reasoning_content: reasoning } : {}),
+      })
       continue
     }
-    // thinking blocks are dropped on input (see header note).
     continue
   }
   if (texts.length > 0) {
-    state.input.push({ role: "assistant", content: [{ type: "output_text", text: texts.join("") }] })
+    state.input.push({
+      role: "assistant",
+      content: [{ type: "output_text", text: texts.join("") }],
+      ...(reasoning !== undefined ? { reasoning_content: reasoning } : {}),
+    })
   }
   return undefined
 }

@@ -134,7 +134,7 @@ describe("lowerMessagesRequest", () => {
     ])
   })
 
-  it("drops thinking blocks on input", () => {
+  it("replays thinking blocks as reasoning_content", () => {
     const result = lowerMessagesRequest({
       max_tokens: 64,
       messages: [
@@ -150,7 +150,7 @@ describe("lowerMessagesRequest", () => {
     })
     if ("error" in result) throw new Error("unexpected error")
     expect(result.request.input).toEqual([
-      { role: "assistant", content: [{ type: "output_text", text: "answer" }] },
+      { role: "assistant", content: [{ type: "output_text", text: "answer" }], reasoning_content: "private thoughts" },
       { role: "user", content: [{ type: "input_text", text: "more" }] },
     ])
   })
@@ -469,7 +469,7 @@ describe("messages endpoint integration", () => {
     const kinds = body.messages.map((item) => item.role)
     expect(kinds).toEqual(["system", "user", "assistant", "user"])
     expect(body.messages[0]).toEqual({ role: "system", content: "be terse" })
-    // The assistant text block is replayed as a plain chat content string.
-    expect(body.messages[2]).toEqual({ role: "assistant", content: "hello" })
+    // Thinking-less assistant turns still carry the deepseek-required field.
+    expect(body.messages[2]).toEqual({ role: "assistant", content: "hello", reasoning_content: "" })
   })
 })

@@ -487,14 +487,26 @@ export type UpstreamUserContent = UpstreamTextContent | UpstreamImageContent
 export type UpstreamInputItem =
   | { role: "system"; content: string }
   | { role: "user"; content: UpstreamUserContent[] }
-  | { role: "assistant"; content: Array<{ type: "output_text"; text: string }> }
+  | {
+      role: "assistant"
+      content: Array<{ type: "output_text"; text: string }>
+      /** Visible reasoning replayed on the chat wire (`reasoning_content`). */
+      reasoning_content?: string
+    }
   | {
       type: "reasoning"
       id: string
       summary: Array<{ type: "summary_text"; text: string }>
       encrypted_content: string | null
     }
-  | { type: "function_call"; call_id: string; name: string; arguments: string }
+  | {
+      type: "function_call"
+      call_id: string
+      name: string
+      arguments: string
+      /** Reasoning of the assistant turn that issued this call. */
+      reasoning_content?: string
+    }
   | { type: "function_call_output"; call_id: string; output: string }
 
 export interface UpstreamTool {
