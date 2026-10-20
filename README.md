@@ -36,7 +36,7 @@ client ──chat/completions──▶ muse-proxy ──alias(muse*/step-5*/goal
                                                           └─raise─▶ 同一套 raise 层(gate:stream=true,goal judge 流式聚合)
 ```
 
-新增的 oa-compat 模型(`supabase/functions/muse-proxy/_lib/chat-upstream.ts` + `supabase/functions/muse-proxy/_lib/oa-compat.ts`):降级(Responses input → chat messages,含 function_call 轮次回放：连续并行调用合并成一条 `assistant(content=null, tool_calls=[...])`，拆散上游直接 400)与升格(chat-completions SSE → 规范 Responses 事件生命周期:`response.created` → `output_item.added` → 文本/思考 delta → `output_text.done`/`output_item.done` → `response.completed`),三个门面共享同一转换层,语义(工具暴露、心跳、终止事件守护)全部一致。2026-10-17 起 **muse 也走这条路径**(别名到 deepseek),`lower.ts` 直发 `/inference/v1/responses` 的分支退役;对 OpenMinis Responses 解析器补齐的 function-call 事件顺序(`output_item.added` → `function_call_arguments.delta` → `function_call_arguments.done` → `output_item.done`)保留。`/v1/models` 目录共 11 条(10 个存活免费档 + 1 个 goal 实验模型;muse / step-5 两个退役 id 已下架但保留解析)。
+新增的 oa-compat 模型(`supabase/functions/muse-proxy/_lib/chat-upstream.ts` + `supabase/functions/muse-proxy/_lib/oa-compat.ts`):降级(Responses input → chat messages,含 function_call 轮次回放：连续并行调用合并成一条 `assistant(content=null, tool_calls=[...])`，拆散上游直接 400)与升格(chat-completions SSE → 规范 Responses 事件生命周期:`response.created` → `output_item.added` → 文本/思考 delta → `output_text.done`/`output_item.done` → `response.completed`),三个门面共享同一转换层,语义(工具暴露、心跳、终止事件守护)全部一致;assistant 历史回放保留可见推理(`reasoning_content`),deepseek 类模型缺失时补空串——thinking mode 缺该字段上游直接 400(见 deepseek 节)。2026-10-17 起 **muse 也走这条路径**(别名到 deepseek),`lower.ts` 直发 `/inference/v1/responses` 的分支退役;对 OpenMinis Responses 解析器补齐的 function-call 事件顺序(`output_item.added` → `function_call_arguments.delta` → `function_call_arguments.done` → `output_item.done`)保留。`/v1/models` 目录共 11 条(10 个存活免费档 + 1 个 goal 实验模型;muse / step-5 两个退役 id 已下架但保留解析)。
 
 ## 部署:Supabase Edge Functions
 
@@ -190,6 +190,7 @@ bun run smoke:converse  # 3 模型 × 3 门面的真实 4 轮对话,逐轮打印
 - **思考**:流式为 `delta.reasoning_content`(catalog 的 `interleaved.field` 原样;`OaCompatRaiser` 同时兼容 `reasoning`);档位取 catalog 的 `reasoning_options` = `low/high/max`。
 - **路由格式**:`oa-compat`(chat completions)且**仅此一种**——2026-10-16 探针(`scripts/probe-deepseek-routing.ts`)实测 `/inference/v1/responses` 返回 400 `ModelProtocolUnsupported: Model does not support this protocol`,同一 body 打到 chat completions 挂载返回 200(2026-10-17 起 catalog `provider.api` 换到 `/inference/openai/v1`,代理同步迁移)。
 - **能力**:工具调用、图片输入(`attachment`)、`temperature`、结构化输出均可用;`context 200,000` / `output 32,000`(`models.opencode.ai/api.json` 的 `opencode/deepseek-v4.1-flash-free`)。
+- **多轮回放**:thinking mode 要求历史 assistant 消息逐条携带 `reasoning_content`;只要出现 `reasoning_content` / 工具轮,后续断言消息缺失即 400 `The reasoning_content in the thinking mode must be passed back to the API`(实测**间歇性**触发,重试时好时坏)。代理在 `lower.ts` 保留客户端回放的可见推理,direct 门面(`responses` 的 reasoning summary、`messages` 的 thinking 块)同样转成该字段,并在 `chat-upstream.ts` 对 deepseek 类模型的每条 assistant 消息缺失时补空串(与 opencode `requireReasoning` 行为一致);`encrypted_content` / 签名 blob 仍丢弃(会话绑定,换会话必被上游拒绝)。
 - **定义处**:`supabase/functions/muse-proxy/_lib/types.ts` 的 `DEEPSEEK_INFO`。
 
 ### glm-5.3-flash-free
@@ -252,7 +253,7 @@ curl -X POST https://your-proxy/v1/responses \
 
 支持范围:
 
-- `input`:字符串,或数组项 `{role, content}` / `{type:"message"}`(user 支持 `input_text`/`input_image` parts,assistant 支持 `output_text`)、`{type:"function_call"}`、`{type:"function_call_output"}`、`{type:"reasoning"}`(加密思考回放项原样透传)
+- `input`:字符串,或数组项 `{role, content}` / `{type:"message"}`(user 支持 `input_text`/`input_image` parts,assistant 支持 `output_text`)、`{type:"function_call"}`、`{type:"function_call_output"}`、`{type:"reasoning"}`(加密 blob 丢弃、可见 summary 文本回放为 `reasoning_content`)
 - `instructions`:转为首条 system 消息;`reasoning.effort`:白名单同 chat 端点(默认 `high`)
 - `tools`:Responses 扁平 function 工具(误传 chat 嵌套形状也兼容),追加在内置工具之后
 - `stream:true`:按 Responses 流式规范以 `event: <type>` + `data: <json>` 帧逐事件透传上游事件(不发 `[DONE]`,与 OpenAI Responses 流式一致),带心跳注释;oa-compat 模型会合成完整 function-call 生命周期(`output_item.added`、`function_call_arguments.delta/done`、`output_item.done`),兼容 OpenMinis 等严格 Responses 客户端;上游混入的非规范 `ping` 保活帧被过滤(`response.completed` 始终是终止事件);若上游未发终止事件就断流,合成 `error`(`upstream_stream_truncated`)事件再关闭,截断不会被误当成正常完成
@@ -261,7 +262,7 @@ curl -X POST https://your-proxy/v1/responses \
 有意的限制(免费层契约):
 
 - **无状态**:`previous_response_id` 非空直接 400,请把完整对话放进 `input`
-- `store` 恒为 `false`,`include` 恒为 `["reasoning.encrypted_content"]`;无 `encrypted_content` 的 reasoning 项被丢弃(上游会 400)
+- `store` 恒为 `false`,`include` 恒为 `["reasoning.encrypted_content"]`;`encrypted_content` 永不回放(会话绑定),reasoning 项的 summary 文本会回放到对应 assistant 的 `reasoning_content`
 - `tool_choice` 恒为 `auto`(上游仅支持);OpenAI 服务端工具类型(`web_search` 等)被忽略——上游内置的 `websearch` 等工具已随指纹携带
 - 任意 `model` id 都映射到免费模型;请求头/请求体指纹规则与 chat 端点完全一致
 
@@ -282,7 +283,7 @@ curl -X POST https://your-proxy/v1/messages \
 
 支持范围:
 
-- `messages`:`content` 为字符串或内容块;user 支持 `text`/`image`(base64 与 url source)/`tool_result` 块,assistant 支持 `text`/`tool_use` 块;`thinking` 块在输入侧被丢弃(上游回放走的是 OpenAI `encrypted_content`,Anthropic 门面不携带,丢掉不影响多轮记忆)
+- `messages`:`content` 为字符串或内容块;user 支持 `text`/`image`(base64 与 url source)/`tool_result` 块,assistant 支持 `text`/`tool_use` 块;assistant `thinking` 块回放为 `reasoning_content`(signature 无法复用,只带文本),user `thinking` 块丢弃
 - `system`:字符串或 text 块数组,转为首条 system 消息
 - `max_tokens`:**必填**(与真实 API 一致,缺失直接 400),钳制到上游上限;`temperature`/`top_p` 透传;`stop_sequences`/`metadata`/`top_k` 接受但忽略
 - `thinking:{type:"enabled",budget_tokens}`:`<2048 → low`,`<8192 → medium`,`<24576 → high`,`≥24576 → xhigh`;`{type:"disabled"} → none`
@@ -694,5 +695,5 @@ bun run scripts/probe-muse-deprecation.ts   # 全部 7 模型 × 3 端点矩阵
 - 内置工具按门槛要求**逐字下发**(描述/参数与真实客户端一致)——这是 2026-10-14 起过门槛的必要条件。
   为保证模型优先使用客户端自己的工具,同名客户端工具以 `mp_<name>` 别名下发、下行再还原;
   客户端未声明的内置调用在上下行两侧都被隐藏,模型不会拿到客户端无法执行的调用结果。
-- 代理无状态,不落盘任何会话数据;加密思考内容(`encrypted_content`)按上游要求原样回传以支持多轮思考回放。
+- 代理无状态,不落盘任何会话数据;加密思考 blob(`encrypted_content`)永不回传(会话绑定),只回放可见推理文本;deepseek thinking mode 下缺失时以空串占位,否则上游 400。
 - `MODEL_ID` 把所有请求映射到免费模型;如需接入其他模型,改 `supabase/functions/muse-proxy/_lib/types.ts` 的 `MODEL_ID` 并确认上游允许。

@@ -225,8 +225,7 @@ describe("lowerRequest: encrypted reasoning replay", () => {
     ])
   })
 
-  it("drops replay items that lost their encrypted_content", () => {
-    // Client stripped reasoning_details entirely: no reasoning items at all.
+  it("replays visible reasoning_content on the assistant item", () => {
     const request = ok(
       lowerRequest({
         messages: [
@@ -236,9 +235,32 @@ describe("lowerRequest: encrypted reasoning replay", () => {
       }),
     )
     expect(request.input).toEqual([
-      { role: "assistant", content: [{ type: "output_text", text: "a" }] },
+      { role: "assistant", content: [{ type: "output_text", text: "a" }], reasoning_content: "visible thinking" },
       { role: "user", content: [{ type: "input_text", text: "next" }] },
     ])
+  })
+
+  it("carries the turn's reasoning onto its tool_calls", () => {
+    const request = ok(
+      lowerRequest({
+        messages: [
+          {
+            role: "assistant",
+            content: null,
+            reasoning_content: "need a tool",
+            tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }],
+          },
+          { role: "tool", tool_call_id: "c1", content: "ok" },
+        ],
+      }),
+    )
+    expect(request.input[0]).toEqual({
+      type: "function_call",
+      call_id: "c1",
+      name: "read",
+      arguments: "{}",
+      reasoning_content: "need a tool",
+    })
   })
 
   it("drops same-id fragments instead of merging (no replay upstream)", () => {

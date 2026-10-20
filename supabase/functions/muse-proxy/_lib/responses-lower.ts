@@ -127,16 +127,32 @@ function systemContentToText(content: unknown): string | undefined {
   return undefined
 }
 
-// Reasoning replay items are ALWAYS dropped on input: encrypted_content is
-// issued per upstream session, but this proxy mints a fresh opencode
-// session id per request, so any replayed blob belongs to a different
-// caller and upstream rejects it with "encrypted_content was not issued
-// to this caller". Dropping keeps multi-turn working via plain text.
-function reasoningReplayItem(_item: Record<string, unknown>): UpstreamInputItem | undefined {
-  return undefined
+// Reasoning replay items never re-send their encrypted_content: the blob is
+// issued per upstream session, but this proxy mints a fresh opencode session
+// id per request, so any replayed blob belongs to a different caller and
+// upstream rejects it with "encrypted_content was not issued to this caller".
+// The VISIBLE summary text is replayed though — DeepSeek thinking mode rejects
+// a history whose assistant turns drop reasoning_content.
+function reasoningSummaryText(item: Record<string, unknown>): string {
+  const parts = Array.isArray(item.summary) ? item.summary : Array.isArray(item.content) ? item.content : []
+  return parts
+    .map((part) => (isRecord(part) && typeof part.text === "string" ? part.text : ""))
+    .join("")
 }
 
-function functionCallItem(item: Record<string, unknown>): UpstreamInputItem | { error: true } {
+interface InputState {
+  systemTexts: string[]
+  /** Visible reasoning carried by a reasoning item until its assistant turn. */
+  pendingReasoning?: string
+}
+
+function takeReasoning(state: InputState): string | undefined {
+  const reasoning = state.pendingReasoning
+  state.pendingReasoning = undefined
+  return reasoning
+}
+
+function functionCallItem(item: Record<string, unknown>, state: InputState): UpstreamInputItem | { error: true } {
   const callId = asString(item.call_id)
   const rawName = asString(item.name)
   if (callId === undefined || rawName === undefined) return { error: true }
@@ -145,7 +161,14 @@ function functionCallItem(item: Record<string, unknown>): UpstreamInputItem | { 
   const name = rawName.split(".").pop()!.split("__").pop()!
   // 原生 custom_tool_call 回放：input 为裸 JS 字符串，转写为 function 参数 JSON。
   const args = asString(item.arguments) ?? (typeof item.input === "string" ? JSON.stringify({ input: item.input }) : "{}")
-  return { type: "function_call", call_id: callId, name, arguments: args }
+  const reasoning = takeReasoning(state)
+  return {
+    type: "function_call",
+    call_id: callId,
+    name,
+    arguments: args,
+    ...(reasoning !== undefined ? { reasoning_content: reasoning } : {}),
+  }
 }
 
 function functionCallOutputItem(item: Record<string, unknown>): UpstreamInputItem | { error: true } {
@@ -167,11 +190,12 @@ function functionCallOutputItem(item: Record<string, unknown>): UpstreamInputIte
   return { type: "function_call_output", call_id: callId, output }
 }
 
-function messageItem(item: Record<string, unknown>, state: { systemTexts: string[] }): UpstreamInputItem[] | { error: true } {
+function messageItem(item: Record<string, unknown>, state: InputState): UpstreamInputItem[] | { error: true } {
   const role = asString(item.role)
   if (role === "system" || role === "developer") {
     const text = systemContentToText(item.content)
     if (text === undefined) return { error: true }
+    state.pendingReasoning = undefined
     state.systemTexts.push(text)
     return []
   }
@@ -179,14 +203,24 @@ function messageItem(item: Record<string, unknown>, state: { systemTexts: string
   if (role === "user") {
     const parts = userContentToParts(item.content)
     if ("error" in parts) return { error: true }
+    state.pendingReasoning = undefined
     return [{ role: "user", content: parts.parts }]
   }
 
   if (role === "assistant") {
     const text = assistantContentToText(item.content)
     if (text === undefined) return { error: true }
+    // Keep pendingReasoning queued when the text is empty: the following
+    // function_call items belong to the same turn and must inherit it.
     if (text.length === 0) return []
-    return [{ role: "assistant", content: [{ type: "output_text", text }] }]
+    const reasoning = takeReasoning(state)
+    return [
+      {
+        role: "assistant",
+        content: [{ type: "output_text", text }],
+        ...(reasoning !== undefined ? { reasoning_content: reasoning } : {}),
+      },
+    ]
   }
 
   return { error: true }
@@ -196,7 +230,7 @@ function messageItem(item: Record<string, unknown>, state: { systemTexts: string
 // the typed `{type: ...}` form) into zero or more upstream items.
 function normalizeInputItem(
   entry: unknown,
-  state: { systemTexts: string[] },
+  state: InputState,
 ): UpstreamInputItem[] | { error: true } {
   if (!isRecord(entry)) return { error: true }
 
@@ -207,7 +241,7 @@ function normalizeInputItem(
   }
 
   if (type === "function_call" || type === "custom_tool_call") {
-    const item = functionCallItem(entry)
+    const item = functionCallItem(entry, state)
     return "error" in item ? item : [item]
   }
 
@@ -217,8 +251,8 @@ function normalizeInputItem(
   }
 
   if (type === "reasoning") {
-    const item = reasoningReplayItem(entry)
-    return item ? [item] : []
+    state.pendingReasoning = reasoningSummaryText(entry)
+    return []
   }
 
   if (type === "item_reference") {
@@ -351,7 +385,7 @@ export function normalizeResponsesRequest(body: unknown, options: NormalizeOptio
     }
   }
 
-  const state = { systemTexts: [] as string[] }
+  const state: InputState = { systemTexts: [] }
   const input: UpstreamInputItem[] = []
 
   const instructions = asString(body.instructions)
